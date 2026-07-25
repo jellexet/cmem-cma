@@ -128,7 +128,7 @@ static vm_fault_t cmem_cma_nopage(struct vm_fault *vmf)
  *
  * @brief Virtual memory operations structure for the CMA DMA device
  */
-static const struct vm_operations_struct cmem_cma_vmps = {
+static const struct vm_operations_struct cmem_cma_vmops = {
     .open = cmem_cma_vmopen,
     .close = cmem_cma_vmclose,
     .fault = cmem_cma_nopage,
@@ -319,6 +319,8 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma)
     vma->vm_pgoff = 0;
     int ret = dma_mmap_coherent(&pdev->dev, vma, buffers[buffer_id].vaddr, buffers[buffer_id].dma_addr, len);
     vma->vm_pgoff = pgoff;
+    vma->vm_ops = &cmem_cma_vmops;
+    cmem_cma_vmopen(vma);
 
     if(ret){
         pr_err("cmem_cma: Failed allocating coherent memory! kernel virtual address: %pK - dma address: %llx - size of allocation: %zu", 
