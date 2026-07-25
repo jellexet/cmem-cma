@@ -184,7 +184,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req)
     buffers[slot].allocated = true;
 
     // Get page information for mmap support
-    buffers[slot].pfn = virt_to_phys(vaddr) >> PAGE_SHIFT;
+    buffers[slot].pfn = page_to_pfn(buffers[slot].pages);
     buffers[slot].pages = virt_to_page(vaddr);
 
     // Return information to userspace
