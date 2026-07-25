@@ -142,9 +142,9 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   // Setting back the default to NUMA_NO_NODE
   set_dev_node(&cmem_cma_pdev.dev, NUMA_NO_NODE);
 
-  pr_info("cmem_cma: Allocated %zu bytes at DMA addr 0x%llx, buffer ID %d, "
+  pr_info("cmem_cma: Allocated %zu bytes at DMA addr %pad, buffer ID %d, "
           "NUMA node %d, PFN 0x%lx\n",
-          req->size, dma_addr, slot, target_node, buffers[slot].pfn);
+          req->size, &dma_addr, slot, target_node, buffers[slot].pfn);
 
   mutex_unlock(&buffer_mutex);
 
