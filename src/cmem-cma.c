@@ -138,7 +138,6 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req)
 
     // Return information to userspace
     req->dma_addr = dma_addr;
-    req->user_addr = (unsigned long)vaddr;
     req->buffer_id = slot;
 
     pr_info("cmem_cma: Allocated %zu bytes at DMA addr 0x%llx, buffer ID %d, NUMA node %d, PFN 0x%lx\n",
