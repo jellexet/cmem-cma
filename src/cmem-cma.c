@@ -271,9 +271,12 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma)
 
     if(ret){
         pr_err("cmem_cma: Failed allocating coherent memory! kernel virtual address: %pK - dma address: %llx - size of allocation: %zu", 
-       buffers[buffer_id].vaddr,
-       (unsigned long long)buffers[buffer_id].dma_addr,
-       len);
+        buffers[buffer_id].vaddr,
+        (unsigned long long)buffers[buffer_id].dma_addr,
+        len);
+
+        mutex_unlock(&buffer_mutex);
+        return -ENOMEM;
     }
 
     mutex_unlock(&buffer_mutex);
