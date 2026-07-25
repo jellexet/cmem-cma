@@ -258,6 +258,7 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma)
      */
     len = vma->vm_end - vma->vm_start;
     if (len > max_len)
+        mutex_unlock(&buffer_mutex);
         return -EINVAL;
 
     /*
@@ -276,7 +277,6 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma)
     }
 
     mutex_unlock(&buffer_mutex);
-
     pr_info("cmem_cma: Successfully mapped buffer %d, size %lu, pfn 0x%lx\n",
             buffer_id, size, pfn);
 
