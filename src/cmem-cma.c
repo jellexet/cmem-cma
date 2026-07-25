@@ -42,7 +42,6 @@ static struct platform_device *pdev = NULL;
 static struct dma_buffer buffers[MAX_BUFFERS];
 static DEFINE_MUTEX(buffer_mutex);
 static const struct file_operations cmem_cma_fops;
-static const struct vm_operations_struct cmem_cma_vmops;
 
 /**
  * @brief Callback for releasing the platform device (I2C for example)
@@ -83,56 +82,6 @@ static int find_free_buffer_slot(void)
     }
     return -1;
 }
-
-/**
- * @brief Function called when starting virtual memory operations
- */
-static void cmem_cma_vmopen(struct vm_area_struct *vma)
-{
-    pr_info("cmem_cma: Started vm operation\n");
-}
-
-/**
- * @brief Function called when ending virtual memory operations
- */
-static void cmem_cma_vmclose(struct vm_area_struct *vma)
-{
-    pr_info("cmem_cma: Finished vm operation\n");
-}
-
-/**
- *
- */
-static vm_fault_t cmem_cma_nopage(struct vm_fault *vmf)
-{
-    struct vm_area_struct *vma = vmf->vma;
-    unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-    int buffer_id = offset / PAGE_SIZE;
-    unsigned long pfn = buffers[buffer_id].pfn;
-
-    if(!pfn_valid(pfn))
-    {
-        pr_err("cmem_cma: Invalid page frame: %lx", pfn);
-        return VM_FAULT_SIGBUS;
-    }
-
-    struct page *page = pfn_to_page(pfn);
-    get_page(page);
-    vmf->page = page;
-
-    return 0;
-}
-
-/**
- * @struct cmem_cma_vmops
- *
- * @brief Virtual memory operations structure for the CMA DMA device
- */
-static const struct vm_operations_struct cmem_cma_vmops = {
-    .open = cmem_cma_vmopen,
-    .close = cmem_cma_vmclose,
-    .fault = cmem_cma_nopage,
-};
 
 /**
  * @brief Allocate a DMA buffer from the CMA region
@@ -319,8 +268,6 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma)
     vma->vm_pgoff = 0;
     int ret = dma_mmap_coherent(&pdev->dev, vma, buffers[buffer_id].vaddr, buffers[buffer_id].dma_addr, len);
     vma->vm_pgoff = pgoff;
-    vma->vm_ops = &cmem_cma_vmops;
-    cmem_cma_vmopen(vma);
 
     if(ret){
         pr_err("cmem_cma: Failed allocating coherent memory! kernel virtual address: %pK - dma address: %llx - size of allocation: %zu", 
