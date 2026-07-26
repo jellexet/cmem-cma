@@ -34,6 +34,7 @@ struct dma_buffer {
   bool allocated;      /**< Allocation state of the buffer */
   struct page *pages;  /**< Page pointer for mmap support */
   unsigned long pfn;   /**< Page frame number for mmap */
+  struct cmem_cma_filp_data *owner; /**< Owner of the DMA buffer */
 };
 
 static int major_number;
@@ -42,6 +43,15 @@ static struct device *cmem_cma_device = NULL;
 static struct dma_buffer buffers[MAX_BUFFERS];
 static DEFINE_MUTEX(buffer_mutex);
 static const struct file_operations cmem_cma_fops;
+
+/**
+ * @struct cmem_cma_filp_data
+ * @brief Internal struct to keep track of buffer owner
+ */
+struct cmem_cma_filp_data {
+    DECLARE_BITMAP(owned, MAX_BUFFERS);
+};
+
 
 /**
  * @brief Callback for releasing the platform device (I2C for example)
@@ -88,7 +98,7 @@ static int find_free_buffer_slot(void) {
  * @param req Pointer to allocation request structure from user space
  * @return 0 on success, -ENOMEM on failure
  */
-static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
+static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req, struct cmem_cma_filp_data *priv_data) {
   int slot;
   void *vaddr;
   dma_addr_t dma_addr;
@@ -134,6 +144,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   // Get page information for mmap support
   buffers[slot].pfn = page_to_pfn(buffers[slot].pages);
   buffers[slot].pages = virt_to_page(vaddr);
+  buffers[slot].owner = priv_data;
 
   // Return information to userspace
   req->dma_addr = dma_addr;
@@ -157,7 +168,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
  * @param req Pointer to free request containing the buffer ID
  * @return 0 on success, -EINVAL if invalid ID or already free
  */
-static int cmem_cma_free_buffer(struct cmem_cma_free_req *req) {
+static int cmem_cma_free_buffer(struct cmem_cma_free_req *req, struct cmem_cma_filp_data *priv_data) {
   int slot = req->buffer_id;
 
   if (slot < 0 || slot >= MAX_BUFFERS)
@@ -165,7 +176,7 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req) {
 
   mutex_lock(&buffer_mutex);
 
-  if (!buffers[slot].allocated) {
+  if (!buffers[slot].allocated && buffers[slot].owner != priv_data) {
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
   }
@@ -233,7 +244,7 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
 
   mutex_lock(&buffer_mutex);
 
-  if (!buffers[buffer_id].allocated) {
+  if (!buffers[buffer_id].allocated && buffers[buffer_id].owner != filp->private_data) {
     pr_err("cmem_cma: Buffer ID %d not allocated\n", buffer_id);
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
@@ -305,14 +316,14 @@ static long cmem_cma_ioctl(struct file *filp, unsigned int cmd,
     if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
       return -EFAULT;
 
-    ret = cmem_cma_alloc_buffer(&req);
+    ret = cmem_cma_alloc_buffer(&req, filp->private_data);
     if (ret)
       return ret;
 
     if (copy_to_user((void __user *)arg, &req, sizeof(req))) {
       struct cmem_cma_free_req free_req = {.buffer_id = req.buffer_id};
 
-      cmem_cma_free_buffer(&free_req);
+      cmem_cma_free_buffer(&free_req, filp->private_data);
       return -EFAULT;
     }
     break;
@@ -323,7 +334,7 @@ static long cmem_cma_ioctl(struct file *filp, unsigned int cmd,
     if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
       return -EFAULT;
 
-    ret = cmem_cma_free_buffer(&req);
+    ret = cmem_cma_free_buffer(&req, filp->private_data);
     break;
   }
 
@@ -369,7 +380,9 @@ static void cmem_cma_free_all_buffers(void) {
  * @return Always returns 0
  */
 static int cmem_cma_open(struct inode *inode, struct file *filp) {
-  pr_info("cmem_cma: Device opened\n");
+  struct cmem_cma_filp_data *fd = kzalloc(sizeof(*fd), GFP_KERNEL);
+  if (!fd) return -ENOMEM;
+  filp->private_data = fd;
   return 0;
 }
 
