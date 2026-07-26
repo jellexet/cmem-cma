@@ -35,6 +35,7 @@ struct dma_buffer {
   struct page *pages;  /**< Page pointer for mmap support */
   unsigned long pfn;   /**< Page frame number for mmap */
   struct cmem_cma_filp_data *owner; /**< Owner of the DMA buffer */
+  atomic_t mmap_count;      /**< Counter to keep track of vm_open and vm_close */
 };
 
 static int major_number;
@@ -52,6 +53,20 @@ struct cmem_cma_filp_data {
     DECLARE_BITMAP(owned, MAX_BUFFERS);
 };
 
+static void cmem_cma_vm_open(struct vm_area_struct *vma) {
+  struct dma_buffer *b = vma->vm_private_data;
+  atomic_inc(&b->mmap_count);
+}
+
+static void cmem_cma_vm_close(struct vm_area_struct *vma) {
+  struct dma_buffer *b = vma->vm_private_data;
+  atomic_dec(&b->mmap_count);
+}
+
+static const struct vm_operations_struct cmem_cma_vm_ops = {
+  .open = cmem_cma_vm_open,
+  .close = cmem_cma_vm_close,
+};
 
 /**
  * @brief Callback for releasing the platform device (I2C for example)
@@ -280,6 +295,8 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
   int ret = dma_mmap_coherent(&cmem_cma_pdev.dev, vma, buffers[buffer_id].vaddr,
                               buffers[buffer_id].dma_addr, len);
   vma->vm_pgoff = pgoff;
+  vma->vm_ops = &cmem_cma_vm_ops;
+  vma->vm_private_data = &buffers[buffer_id];
 
   if (ret) {
     pr_err("cmem_cma: Failed allocating coherent memory! kernel virtual "
