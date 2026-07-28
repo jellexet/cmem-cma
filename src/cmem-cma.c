@@ -510,12 +510,13 @@ err_platform:
 static void __exit cmem_cma_exit(void) {
   pr_info("cmem_cma: Cleaning up module\n");
 
-  unregister_chrdev(major_number, DEVICE_NAME);
-  platform_device_unregister(&cmem_cma_pdev);
   device_destroy(cmem_cma_class, MKDEV(major_number, 0));
   class_destroy(cmem_cma_class);
+  unregister_chrdev(major_number, DEVICE_NAME);
 
   cmem_cma_free_all_buffers();
+  platform_device_unregister(&cmem_cma_pdev);
+
   pr_info("cmem_cma: Module unloaded\n");
 }
 
