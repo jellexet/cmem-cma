@@ -2,6 +2,7 @@
  * @file cmem_cma_module.c
  * @brief Kernel module for coherent DMA buffer allocation using CMA with NUMA
  * awareness
+ * @author Mario Shehu
  */
 
 #include "cmem-cma.h"
@@ -38,7 +39,9 @@ struct dma_buffer {
   atomic_t mmap_count;      /**< Counter to keep track of vm_open and vm_close */
 };
 
-static int major_number;
+static int major_number = 0;
+static int n_enabled_numa_nodes = 0;
+static nodemask_t active_numa_nodes;
 static struct class *cmem_cma_class = NULL;
 static struct device *cmem_cma_device = NULL;
 static struct dma_buffer buffers[MAX_BUFFERS];
@@ -93,6 +96,29 @@ static struct platform_device cmem_cma_pdev = {
         },
 };
 
+
+/**
+ * @brief Find all the enabled NUMA nodes and save the value to n_enabled_numa_nodes
+ */
+static void setup_numa_nodes(void) {
+  pr_debug("cmem_cma: Setup NUMA nodes");
+
+  if(!num_online_nodes()){
+    pr_warn("cmem_cma: No NUMA nodes detected");
+    n_enabled_numa_nodes = 0;
+    return;
+  }
+  
+  nodes_clear(active_numa_nodes);
+  int node;
+
+  for_each_online_node(node) {
+    pr_info("cmem_cma: Found active NUMA node %d", node);
+    node_set(node, active_numa_nodes);
+    n_enabled_numa_nodes += 1;
+  }
+}
+
 /**
  * @brief Find the index of the first available buffer slot
  *
@@ -128,19 +154,16 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req, struct cmem_cma
     return -ENOMEM;
   }
 
-  // Validate NUMA node
-  if (target_node < -1 || target_node >= nr_node_ids) {
+  if (target_node < -1 || target_node >= n_enabled_numa_nodes) {
     pr_err("cmem_cma: Invalid NUMA node %d\n", target_node);
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
   }
 
-  // Set device NUMA node preference if specified
-  if (target_node != NUMA_NO_NODE && target_node != -1) {
+  if (target_node != NUMA_NO_NODE) {
     set_dev_node(&cmem_cma_pdev.dev, target_node);
   }
 
-  // Allocate DMA coherent memory from CMA
   vaddr =
       dma_alloc_coherent(&cmem_cma_pdev.dev, req->size, &dma_addr, GFP_KERNEL);
   if (!vaddr) {
@@ -149,23 +172,19 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req, struct cmem_cma
     return -ENOMEM;
   }
 
-  // Store buffer information
   buffers[slot].vaddr = vaddr;
   buffers[slot].dma_addr = dma_addr;
   buffers[slot].size = req->size;
   buffers[slot].numa_node = target_node;
   buffers[slot].allocated = true;
 
-  // Get page information for mmap support
   buffers[slot].pages = virt_to_page(vaddr);
   buffers[slot].pfn = page_to_pfn(buffers[slot].pages);
   buffers[slot].owner = priv_data;
 
-  // Return information to userspace
   req->dma_addr = dma_addr;
   req->buffer_id = slot;
 
-  // Setting back the default to NUMA_NO_NODE
   set_dev_node(&cmem_cma_pdev.dev, NUMA_NO_NODE);
 
   pr_info("cmem_cma: Allocated %zu bytes at DMA addr %pad, buffer ID %d, "
@@ -199,7 +218,7 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req, struct cmem_cma_f
   dma_free_coherent(&cmem_cma_pdev.dev, buffers[slot].size, buffers[slot].vaddr,
                     buffers[slot].dma_addr);
 
-  pr_info("cmem_cma: Freed buffer ID %d, size %zu bytes\n", slot,
+  pr_debug("cmem_cma: Freed buffer ID %d, size %zu bytes\n", slot,
           buffers[slot].size);
 
   memset(&buffers[slot], 0, sizeof(struct dma_buffer));
@@ -230,7 +249,7 @@ static int cmem_cma_get_info(struct cmem_cma_info *info) {
 
   info->num_buffers = count;
   info->total_allocated = total;
-  info->numa_nodes_available = nr_node_ids;
+  info->numa_nodes_available = n_enabled_numa_nodes;
 
   mutex_unlock(&buffer_mutex);
 
@@ -250,7 +269,7 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
   int buffer_id =
       offset / PAGE_SIZE; // Simple mapping: offset = buffer_id * PAGE_SIZE
 
-  pr_info("cmem_cma: mmap called, size=%lu, offset=%lu\n", size, offset);
+  pr_debug("cmem_cma: mmap called, size=%lu, offset=%lu\n", size, offset);
 
   if (buffer_id < 0 || buffer_id >= MAX_BUFFERS) {
     pr_err("cmem_cma: Invalid buffer ID %d for mmap\n", buffer_id);
@@ -278,18 +297,12 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
   unsigned long len;
   unsigned long pgoff;
 
-  /*
-   * Check the requested size of the region is within range
-   */
   len = vma->vm_end - vma->vm_start;
   if (len > max_len) {
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
   }
 
-  /*
-   * We need to temporarily clear vm_pgoff for dma_mmap_coherent()
-   */
   pgoff = vma->vm_pgoff;
   vma->vm_pgoff = 0;
   int ret = dma_mmap_coherent(&cmem_cma_pdev.dev, vma, buffers[buffer_id].vaddr,
@@ -383,7 +396,7 @@ static void cmem_cma_free_all_buffers(void) {
       dma_free_coherent(&cmem_cma_pdev.dev, buffers[i].size, buffers[i].vaddr,
                         buffers[i].dma_addr);
       memset(&buffers[i], 0, sizeof(struct dma_buffer));
-      pr_info("cmem_cma: Freed buffer %d \n", i);
+      pr_debug("cmem_cma: Freed buffer %d \n", i);
     }
   }
   mutex_unlock(&buffer_mutex);
@@ -439,16 +452,16 @@ static const struct file_operations cmem_cma_fops = {
 static int __init cmem_cma_init(void) {
   int ret;
 
-  pr_info("cmem_cma: Initializing CMA DMA allocator module\n");
+  pr_debug("cmem_cma: Initializing CMA DMA allocator module\n");
 
-  // Register platform device
+  setup_numa_nodes();
+
   ret = platform_device_register(&cmem_cma_pdev);
   if (ret) {
     pr_err("cmem_cma: Failed to register platform device\n");
     return ret;
   }
 
-  // Set up DMA configuration
   ret = dma_set_mask_and_coherent(&cmem_cma_pdev.dev, DMA_BIT_MASK(64));
   if (ret) {
     pr_warn("cmem_cma: Failed to set 64-bit DMA mask, trying 32-bit\n");
@@ -459,7 +472,6 @@ static int __init cmem_cma_init(void) {
     }
   }
 
-  // Register character device
   major_number = register_chrdev(0, DEVICE_NAME, &cmem_cma_fops);
   if (major_number < 0) {
     pr_err("cmem_cma: Failed to register character device\n");
@@ -467,7 +479,6 @@ static int __init cmem_cma_init(void) {
     goto err_platform;
   }
 
-  // Create device class
   cmem_cma_class = class_create(CLASS_NAME);
   if (IS_ERR(cmem_cma_class)) {
     pr_err("cmem_cma: Failed to create device class\n");
@@ -475,7 +486,6 @@ static int __init cmem_cma_init(void) {
     goto err_chrdev;
   }
 
-  // Create device
   cmem_cma_device = device_create(cmem_cma_class, NULL, MKDEV(major_number, 0),
                                   NULL, DEVICE_NAME);
   if (IS_ERR(cmem_cma_device)) {
@@ -484,12 +494,11 @@ static int __init cmem_cma_init(void) {
     goto err_class;
   }
 
-  // Initialize buffer array
   memset(buffers, 0, sizeof(buffers));
 
   pr_info("cmem_cma: Module loaded successfully, major number %d\n",
           major_number);
-  pr_info("cmem_cma: NUMA nodes available: %d\n", nr_node_ids);
+  pr_info("cmem_cma: NUMA nodes available: %d\n", n_enabled_numa_nodes);
 
   return 0;
 
