@@ -36,7 +36,7 @@ struct dma_buffer {
   struct page *pages;  /**< Page pointer for mmap support */
   unsigned long pfn;   /**< Page frame number for mmap */
   struct cmem_cma_filp_data *owner; /**< Owner of the DMA buffer */
-  atomic_t mmap_count;      /**< Counter to keep track of vm_open and vm_close */
+  atomic_t mmap_count; /**< Counter to keep track of vm_open and vm_close */
 };
 
 static int major_number = 0;
@@ -53,7 +53,7 @@ static const struct file_operations cmem_cma_fops;
  * @brief Internal struct to keep track of buffer owner
  */
 struct cmem_cma_filp_data {
-    DECLARE_BITMAP(owned, MAX_BUFFERS);
+  DECLARE_BITMAP(owned, MAX_BUFFERS);
 };
 
 static void cmem_cma_vm_open(struct vm_area_struct *vma) {
@@ -67,8 +67,8 @@ static void cmem_cma_vm_close(struct vm_area_struct *vma) {
 }
 
 static const struct vm_operations_struct cmem_cma_vm_ops = {
-  .open = cmem_cma_vm_open,
-  .close = cmem_cma_vm_close,
+    .open = cmem_cma_vm_open,
+    .close = cmem_cma_vm_close,
 };
 
 /**
@@ -96,19 +96,19 @@ static struct platform_device cmem_cma_pdev = {
         },
 };
 
-
 /**
- * @brief Find all the enabled NUMA nodes and save the value to n_enabled_numa_nodes
+ * @brief Find all the enabled NUMA nodes and save the value to
+ * n_enabled_numa_nodes
  */
 static void setup_numa_nodes(void) {
   pr_debug("cmem_cma: Setup NUMA nodes");
 
-  if(!num_online_nodes()){
+  if (!num_online_nodes()) {
     pr_warn("cmem_cma: No NUMA nodes detected");
     n_enabled_numa_nodes = 0;
     return;
   }
-  
+
   nodes_clear(active_numa_nodes);
   int node;
 
@@ -139,7 +139,8 @@ static int find_free_buffer_slot(void) {
  * @param req Pointer to allocation request structure from user space
  * @return 0 on success, -ENOMEM on failure
  */
-static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req, struct cmem_cma_filp_data *priv_data) {
+static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req,
+                                 struct cmem_cma_filp_data *priv_data) {
   int slot;
   void *vaddr;
   dma_addr_t dma_addr;
@@ -202,7 +203,8 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req, struct cmem_cma
  * @param req Pointer to free request containing the buffer ID
  * @return 0 on success, -EINVAL if invalid ID or already free
  */
-static int cmem_cma_free_buffer(struct cmem_cma_free_req *req, struct cmem_cma_filp_data *priv_data) {
+static int cmem_cma_free_buffer(struct cmem_cma_free_req *req,
+                                struct cmem_cma_filp_data *priv_data) {
   int slot = req->buffer_id;
 
   if (slot < 0 || slot >= MAX_BUFFERS)
@@ -219,7 +221,7 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req, struct cmem_cma_f
                     buffers[slot].dma_addr);
 
   pr_debug("cmem_cma: Freed buffer ID %d, size %zu bytes\n", slot,
-          buffers[slot].size);
+           buffers[slot].size);
 
   memset(&buffers[slot], 0, sizeof(struct dma_buffer));
 
@@ -278,7 +280,8 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
 
   mutex_lock(&buffer_mutex);
 
-  if (!buffers[buffer_id].allocated && buffers[buffer_id].owner != filp->private_data) {
+  if (!buffers[buffer_id].allocated &&
+      buffers[buffer_id].owner != filp->private_data) {
     pr_err("cmem_cma: Buffer ID %d not allocated\n", buffer_id);
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
@@ -403,6 +406,18 @@ static void cmem_cma_free_all_buffers(void) {
 }
 
 /**
+ * @brief Free all allocated buffers owned by a userpace process
+ */
+static void
+cmem_cma_free_filp_owned_buffers(struct cmem_cma_filp_data *priv_data) {
+  for (int idx = 0; idx < MAX_BUFFERS; idx++) {
+    if (buffers[idx].owner == priv_data) {
+      memset(&buffers[idx], 0, sizeof(struct dma_buffer));
+    }
+  }
+}
+
+/**
  * @brief Called when the device file is opened
  *
  * @param inode Pointer to inode structure
@@ -411,7 +426,8 @@ static void cmem_cma_free_all_buffers(void) {
  */
 static int cmem_cma_open(struct inode *inode, struct file *filp) {
   struct cmem_cma_filp_data *fd = kzalloc(sizeof(*fd), GFP_KERNEL);
-  if (!fd) return -ENOMEM;
+  if (!fd)
+    return -ENOMEM;
   filp->private_data = fd;
   return 0;
 }
@@ -425,6 +441,7 @@ static int cmem_cma_open(struct inode *inode, struct file *filp) {
  */
 static int cmem_cma_release(struct inode *inode, struct file *filp) {
   pr_info("cmem_cma: Device closed\n");
+  cmem_cma_free_filp_owned_buffers(filp->private_data);
   return 0;
 }
 
