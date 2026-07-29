@@ -236,16 +236,16 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req,
  * @param info Pointer to user-space structure to fill with info
  * @return 0 on success
  */
-static int cmem_cma_get_info(struct cmem_cma_info *info) {
-  int i, count = 0;
+static int cmem_cma_get_info(struct cmem_cma_info *info, struct cmem_cma_filp_data *priv_data) {
+  int count = 0;
   size_t total = 0;
 
   mutex_lock(&buffer_mutex);
 
-  for (i = 0; i < MAX_BUFFERS; i++) {
-    if (buffers[i].allocated) {
+  for (int idx = 0; idx < MAX_BUFFERS; idx++) {
+    if (buffers[idx].allocated && buffers[idx].owner == priv_data) {
       count++;
-      total += buffers[i].size;
+      total += buffers[idx].size;
     }
   }
 
@@ -373,7 +373,7 @@ static long cmem_cma_ioctl(struct file *filp, unsigned int cmd,
 
   case CMEM_CMA_GET_INFO: {
     struct cmem_cma_info info;
-    ret = cmem_cma_get_info(&info);
+    ret = cmem_cma_get_info(&info, filp->private_data);
     if (ret)
       return ret;
 
