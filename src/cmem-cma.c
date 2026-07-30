@@ -33,8 +33,6 @@ struct dma_buffer {
   size_t size;         /**< Size of the buffer in bytes */
   int numa_node;       /**< NUMA node to which the buffer is bound */
   bool allocated;      /**< Allocation state of the buffer */
-  struct page *pages;  /**< Page pointer for mmap support */
-  unsigned long pfn;   /**< Page frame number for mmap */
   struct cmem_cma_filp_data *owner; /**< Owner of the DMA buffer */
   atomic_t mmap_count; /**< Counter to keep track of vm_open and vm_close */
 };
@@ -48,7 +46,7 @@ static struct dma_buffer buffers[MAX_BUFFERS];
 static DEFINE_MUTEX(buffer_mutex);
 static const struct file_operations cmem_cma_fops;
 
-/**
+ /**
  * @struct cmem_cma_filp_data
  * @brief Internal struct to keep track of buffer owner
  */
@@ -178,9 +176,6 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req,
   buffers[slot].size = req->size;
   buffers[slot].numa_node = target_node;
   buffers[slot].allocated = true;
-
-  buffers[slot].pages = virt_to_page(vaddr);
-  buffers[slot].pfn = page_to_pfn(buffers[slot].pages);
   buffers[slot].owner = priv_data;
 
   req->dma_addr = dma_addr;
@@ -189,8 +184,8 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req,
   set_dev_node(&cmem_cma_pdev.dev, NUMA_NO_NODE);
 
   pr_info("cmem_cma: Allocated %zu bytes at DMA addr %pad, buffer ID %d, "
-          "NUMA node %d, PFN 0x%lx\n",
-          req->size, &dma_addr, slot, target_node, buffers[slot].pfn);
+          "NUMA node %d\n",
+          req->size, &dma_addr, slot, target_node);
 
   mutex_unlock(&buffer_mutex);
 
@@ -294,22 +289,12 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
     return -EINVAL;
   }
 
-  unsigned long pfn = buffers[buffer_id].pfn;
-
-  size_t max_len = buffers[buffer_id].size;
-  unsigned long len;
   unsigned long pgoff;
-
-  len = vma->vm_end - vma->vm_start;
-  if (len > max_len) {
-    mutex_unlock(&buffer_mutex);
-    return -EINVAL;
-  }
 
   pgoff = vma->vm_pgoff;
   vma->vm_pgoff = 0;
   int ret = dma_mmap_coherent(&cmem_cma_pdev.dev, vma, buffers[buffer_id].vaddr,
-                              buffers[buffer_id].dma_addr, len);
+                              buffers[buffer_id].dma_addr, size);
   vma->vm_pgoff = pgoff;
   vma->vm_ops = &cmem_cma_vm_ops;
   vma->vm_private_data = &buffers[buffer_id];
@@ -318,15 +303,15 @@ static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
     pr_err("cmem_cma: Failed allocating coherent memory! kernel virtual "
            "address: %pK - dma address: %llx - size of allocation: %zu",
            buffers[buffer_id].vaddr,
-           (unsigned long long)buffers[buffer_id].dma_addr, len);
+           (unsigned long long)buffers[buffer_id].dma_addr, size);
 
     mutex_unlock(&buffer_mutex);
     return -ENOMEM;
   }
 
   mutex_unlock(&buffer_mutex);
-  pr_info("cmem_cma: Successfully mapped buffer %d, size %lu, pfn 0x%lx\n",
-          buffer_id, size, pfn);
+  pr_info("cmem_cma: Successfully mapped buffer %d, size %lu\n",
+          buffer_id, size);
 
   return 0;
 }
