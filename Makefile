@@ -57,7 +57,7 @@ clean:
 
 # Install module (requires root)
 install: module
-	sudo insmod cmem_cma.ko
+	sudo insmod cmem-cma.ko
 
 # Remove module (requires root)
 remove:
