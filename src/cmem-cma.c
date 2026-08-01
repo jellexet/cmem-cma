@@ -361,10 +361,11 @@ static int cmem_cma_proc_show(struct seq_file *m, void *v) {
   unsigned long index;
   int count = 0;
   size_t total = 0;
+  const unsigned long max_allocation_MB = effective_max_alloc_size /  (1024 * 1024);
 
   seq_puts(m, "cmem_cma driver status\n");
   seq_puts(m, "-----------------------\n");
-  seq_printf(m, "max_allocation_size:   %lu bytes\n", effective_max_alloc_size);
+  seq_printf(m, "max_allocation_size:   %lu MB\n", max_allocation_MB);
   seq_printf(m, "max_buffers:           %u\n", effective_max_buffers);
   seq_printf(m, "numa_nodes_available:  %d\n", nr_node_ids);
   seq_printf(m, "numa_nodes_registered: %d\n", cmem_cma_num_nodes);
@@ -381,9 +382,11 @@ static int cmem_cma_proc_show(struct seq_file *m, void *v) {
   }
   mutex_unlock(&buffer_mutex);
 
+  const size_t total_MB = total / (1024 * 1024);
+
   seq_puts(m, "\n");
   seq_printf(m, "total buffers:   %d\n", count);
-  seq_printf(m, "total allocated: %zu bytes\n", total);
+  seq_printf(m, "total allocated: %zu MB\n", total_MB);
 
   return 0;
 }
