@@ -2,10 +2,10 @@
  * @file cmem_cma_module.c
  * @brief Kernel module for coherent DMA buffer allocation using CMA with NUMA
  * awareness
- * @author Mario Shehu
  */
 
 #include "cmem-cma.h"
+#include <linux/capability.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/dma-map-ops.h>
@@ -15,179 +15,287 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/nodemask.h>
 #include <linux/numa.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/topology.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/xarray.h>
+
+/* Minimum size of a single buffer allocation */
+#define CMEM_CMA_MIN_BUFFER_SIZE   PAGE_SIZE
+
+/* Default value of the max_allocation_size module parameter, in bytes. */
+#define CMEM_CMA_DEFAULT_MAX_ALLOC_SIZE (8UL * 1024 * 1024 * 1024) /* 8 GiB */
+
+/* Maximum number of concurrently open buffer IDs */
+#define CMEM_CMA_HARD_MAX_BUFFERS  65536
+
+/* Read-only encoding. */
+#define READONLY 0444
 
 /**
  * @struct dma_buffer
- * @brief Internal structure used to track allocated DMA buffers
+ * @brief Internal structure used to track a single allocated DMA buffer
+ *
+ * Instances are heap-allocated and owned by xarray (cmem_buffers).
  */
 struct dma_buffer {
-  void *vaddr;         /**< Virtual address visible to the kernel */
-  dma_addr_t dma_addr; /**< Physical (DMA) address of the buffer */
-  size_t size;         /**< Size of the buffer in bytes */
-  int numa_node;       /**< NUMA node to which the buffer is bound */
-  bool allocated;      /**< Allocation state of the buffer */
-  struct cmem_cma_filp_data *owner; /**< Owner of the DMA buffer */
-  atomic_t mmap_count; /**< Counter to keep track of vm_open and vm_close */
+  void *vaddr;          /**< Virtual address visible to the kernel */
+  dma_addr_t dma_addr;  /**< Physical (DMA) address of the buffer */
+  size_t size;          /**< Size of the buffer in bytes */
+  int numa_node;         /**< NUMA node */
+  struct device *dev;    /**< Device the allocation was made against; the
+                              matching device must be used for freeing */
 };
 
-static int major_number = 0;
-static int n_enabled_numa_nodes = 0;
-static nodemask_t active_numa_nodes;
+/*
+ * @brief Largest single buffer allocation the driver will hand out.
+ *
+ *   insmod cmem_cma.ko max_allocation_size=536870912   # 512 MiB
+ *   modprobe cmem_cma max_allocation_size=1073741824   # 1 GiB
+ *
+ *   The parameter is read-only after load. 
+ */
+static unsigned long max_allocation_size = CMEM_CMA_DEFAULT_MAX_ALLOC_SIZE;
+module_param(max_allocation_size, ulong, READONLY);
+MODULE_PARM_DESC(max_allocation_size,
+    "Maximum size in bytes of a single DMA buffer allocation (default 8GiB). "
+    " Read 'CmaTotal' in /proc/meminfo and set max_allocation_size to that value "
+    "at load time if you want the driver to only use CMA memory.");
+
+/* Effective (post-clamp) maximum total RAM the driver will occupy. */
+static unsigned long effective_max_alloc_size;
+/* Effective (post-clamp) maximum numver of buffer. */
+static u32 effective_max_buffers;
+
+static DEFINE_XARRAY_ALLOC(cmem_buffers);
+static DEFINE_MUTEX(buffer_mutex);
+
+static int major_number;
 static struct class *cmem_cma_class = NULL;
 static struct device *cmem_cma_device = NULL;
-static struct dma_buffer buffers[MAX_BUFFERS];
-static DEFINE_MUTEX(buffer_mutex);
+static struct proc_dir_entry *cmem_cma_proc_entry = NULL;
 static const struct file_operations cmem_cma_fops;
 
- /**
- * @struct cmem_cma_filp_data
- * @brief Internal struct to keep track of buffer owner
+/*
+ * @brief Per-NUMA-node platform devices
  */
-struct cmem_cma_filp_data {
-  DECLARE_BITMAP(owned, MAX_BUFFERS);
+struct cmem_cma_node_device {
+  struct platform_device pdev;
+  bool registered;
 };
 
-static void cmem_cma_vm_open(struct vm_area_struct *vma) {
-  struct dma_buffer *b = vma->vm_private_data;
-  atomic_inc(&b->mmap_count);
-}
-
-static void cmem_cma_vm_close(struct vm_area_struct *vma) {
-  struct dma_buffer *b = vma->vm_private_data;
-  atomic_dec(&b->mmap_count);
-}
-
-static const struct vm_operations_struct cmem_cma_vm_ops = {
-    .open = cmem_cma_vm_open,
-    .close = cmem_cma_vm_close,
-};
+static struct cmem_cma_node_device *cmem_cma_node_devs;
+static int cmem_cma_num_nodes;
 
 /**
- * @brief Callback for releasing the platform device (I2C for example)
- *
- * @param dev Pointer to the device being released
+ * @brief Callback for releasing a per-node platform device
  */
 static void cmem_cma_pdev_release(struct device *dev) {
-  // Nothing to do here at the moment.
+  /* Devices are embedded in cmem_cma_node_devs[], which we kfree()
+   * ourselves in cmem_cma_unregister_node_devices(); nothing to do here. */
 }
 
 /**
- * @struct cmem_cma_pdev
- *
- * @brief Platform device structure
+ * @brief Compute the effective maximum size the driver can take in memory and
+ *        the effective maximum number of buffers that can be allocated.
  */
-static struct platform_device cmem_cma_pdev = {
-    .name = "cma-dma-device",
-    .id = -1,
-    .dev =
-        {
-            .release = cmem_cma_pdev_release,
-            .coherent_dma_mask = DMA_BIT_MASK(64),
-            .dma_mask = &cmem_cma_pdev.dev.coherent_dma_mask,
-        },
-};
+static void cmem_cma_compute_limits(void) {
+  effective_max_alloc_size = max_allocation_size;
+
+  effective_max_buffers = clamp_t(unsigned long,
+                                   effective_max_alloc_size / CMEM_CMA_MIN_BUFFER_SIZE,
+                                   1, CMEM_CMA_HARD_MAX_BUFFERS);
+
+  pr_info("cmem_cma: effective max allocation size = %lu bytes, "
+          "max concurrent buffers = %u\n",
+          effective_max_alloc_size, effective_max_buffers);
+}
 
 /**
- * @brief Find all the enabled NUMA nodes and save the value to
- * n_enabled_numa_nodes
+ * @brief Register one platform device per online NUMA node
+ *
+ * @return 0 on success, negative errno on failure (nothing left registered)
  */
-static void setup_numa_nodes(void) {
-  pr_debug("cmem_cma: Setup NUMA nodes");
+static int cmem_cma_register_node_devices(void) {
+  int node, ret;
 
-  if (!num_online_nodes()) {
-    pr_warn("cmem_cma: No NUMA nodes detected");
-    n_enabled_numa_nodes = 0;
-    return;
-  }
-
-  nodes_clear(active_numa_nodes);
-  int node;
+  cmem_cma_num_nodes = nr_node_ids;
+  cmem_cma_node_devs = kcalloc(cmem_cma_num_nodes, sizeof(*cmem_cma_node_devs),
+                                GFP_KERNEL);
+  if (!cmem_cma_node_devs)
+    return -ENOMEM;
 
   for_each_online_node(node) {
-    pr_info("cmem_cma: Found active NUMA node %d", node);
-    node_set(node, active_numa_nodes);
-    n_enabled_numa_nodes += 1;
+    struct platform_device *pdev = &cmem_cma_node_devs[node].pdev;
+
+    pdev->name = "cma-dma-device";
+    pdev->id = node;
+    pdev->dev.release = cmem_cma_pdev_release;
+    pdev->dev.coherent_dma_mask = DMA_BIT_MASK(64);
+    pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+    set_dev_node(&pdev->dev, node);
+
+    ret = platform_device_register(pdev);
+    if (ret) {
+      pr_err("cmem_cma: failed to register platform device for node %d (%d)\n",
+             node, ret);
+      goto unwind;
+    }
+
+    ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+    if (ret) {
+      pr_warn("cmem_cma: node %d: 64-bit DMA mask unavailable, trying 32-bit\n",
+              node);
+      ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+    }
+    if (ret) {
+      pr_err("cmem_cma: node %d: failed to set DMA mask (%d)\n", node, ret);
+      platform_device_unregister(pdev);
+      goto unwind;
+    }
+
+    cmem_cma_node_devs[node].registered = true;
+    pr_info("cmem_cma: registered DMA device for NUMA node %d\n", node);
   }
+
+  if (first_online_node >= cmem_cma_num_nodes ||
+      !cmem_cma_node_devs[first_online_node].registered) {
+    pr_err("cmem_cma: no usable NUMA node device was registered\n");
+    ret = -ENODEV;
+    goto unwind;
+  }
+
+  return 0;
+
+unwind:
+  for_each_online_node(node) {
+    if (cmem_cma_node_devs[node].registered)
+      platform_device_unregister(&cmem_cma_node_devs[node].pdev);
+  }
+  kfree(cmem_cma_node_devs);
+  cmem_cma_node_devs = NULL;
+  return ret;
 }
 
 /**
- * @brief Find the index of the first available buffer slot
+ * @brief Unregister all per-node platform devices
  *
- * @return Index of the free buffer slot, or -1 if all are occupied
+ * MUST be called only after every DMA buffer has already been freed
  */
-static int find_free_buffer_slot(void) {
-  int i;
-  for (i = 0; i < MAX_BUFFERS; i++) {
-    if (!buffers[i].allocated)
-      return i;
+static void cmem_cma_unregister_node_devices(void) {
+  int node;
+
+  if (!cmem_cma_node_devs)
+    return;
+
+  for_each_online_node(node) {
+    if (cmem_cma_node_devs[node].registered)
+      platform_device_unregister(&cmem_cma_node_devs[node].pdev);
   }
-  return -1;
+  kfree(cmem_cma_node_devs);
+  cmem_cma_node_devs = NULL;
+}
+
+/**
+ * @brief Select the device to use for a given NUMA 
+ *
+ * @param numa_node Requested node, or NUMA_NO_NODE (-1) for "no preference"
+ * @return struct platform_device pointer
+ *
+ * If the argment is NUMA_NO_NODE, resolve to CPU's associated NUMA node.
+ */
+static struct device *cmem_cma_get_node_device(int numa_node) {
+  int node = numa_node;
+
+  if (node == NUMA_NO_NODE)
+    node = numa_node_id();
+
+  if (node < 0 || node >= cmem_cma_num_nodes ||
+      !cmem_cma_node_devs[node].registered) {
+    pr_warn_ratelimited(
+        "cmem_cma: NUMA node %d has no usable device, falling back to node %d\n",
+        numa_node, first_online_node);
+    node = first_online_node;
+  }
+
+  return &cmem_cma_node_devs[node].pdev.dev;
 }
 
 /**
  * @brief Allocate a DMA buffer from the CMA region
  *
  * @param req Pointer to allocation request structure from user space
- * @return 0 on success, -ENOMEM on failure
+ * @return 0 on success, negative errno on failure
  */
-static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req,
-                                 struct cmem_cma_filp_data *priv_data) {
-  int slot;
+static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
+  struct xa_limit limit = { .min = 0, .max = effective_max_buffers - 1 };
+  struct dma_buffer *buf;
+  struct device *dma_dev;
   void *vaddr;
   dma_addr_t dma_addr;
-  int target_node = req->numa_node;
+  u32 id;
+  int ret;
 
-  mutex_lock(&buffer_mutex);
-
-  slot = find_free_buffer_slot();
-  if (slot < 0) {
-    pr_err("cmem_cma: No free buffer slots available\n");
-    mutex_unlock(&buffer_mutex);
-    return -ENOMEM;
-  }
-
-  if (target_node < -1 || target_node >= n_enabled_numa_nodes) {
-    pr_err("cmem_cma: Invalid NUMA node %d\n", target_node);
-    mutex_unlock(&buffer_mutex);
+  if (req->size == 0) {
+    pr_err("cmem_cma: rejected zero-length allocation request\n");
     return -EINVAL;
   }
 
-  if (target_node != NUMA_NO_NODE) {
-    set_dev_node(&cmem_cma_pdev.dev, target_node);
+  if (req->size > effective_max_alloc_size) {
+    pr_err("cmem_cma: requested size %zu exceeds max_allocation_size (%lu bytes)\n",
+           req->size, effective_max_alloc_size);
+    return -EINVAL;
   }
 
-  vaddr =
-      dma_alloc_coherent(&cmem_cma_pdev.dev, req->size, &dma_addr, GFP_KERNEL);
+  if (req->numa_node < -1 || req->numa_node >= nr_node_ids) {
+    pr_err("cmem_cma: invalid NUMA node %d\n", req->numa_node);
+    return -EINVAL;
+  }
+
+  buf = kzalloc(sizeof(*buf), GFP_KERNEL);
+  if (!buf)
+    return -ENOMEM;
+
+  dma_dev = cmem_cma_get_node_device(req->numa_node);
+
+  vaddr = dma_alloc_coherent(dma_dev, req->size, &dma_addr, GFP_KERNEL);
   if (!vaddr) {
-    pr_err("cmem_cma: Failed to allocate DMA buffer of size %zu\n", req->size);
-    mutex_unlock(&buffer_mutex);
+    pr_err("cmem_cma: failed to allocate DMA buffer of size %zu\n", req->size);
+    kfree(buf);
     return -ENOMEM;
   }
 
-  buffers[slot].vaddr = vaddr;
-  buffers[slot].dma_addr = dma_addr;
-  buffers[slot].size = req->size;
-  buffers[slot].numa_node = target_node;
-  buffers[slot].allocated = true;
-  buffers[slot].owner = priv_data;
+  buf->vaddr = vaddr;
+  buf->dma_addr = dma_addr;
+  buf->size = req->size;
+  buf->numa_node = req->numa_node;
+  buf->dev = dma_dev;
+
+  mutex_lock(&buffer_mutex);
+  ret = xa_alloc(&cmem_buffers, &id, buf, limit, GFP_KERNEL);
+  mutex_unlock(&buffer_mutex);
+
+  if (ret) {
+    pr_err("cmem_cma: no free buffer IDs available (%d)\n", ret);
+    dma_free_coherent(dma_dev, req->size, vaddr, dma_addr);
+    kfree(buf);
+    return ret == -EBUSY ? -ENOMEM : ret;
+  }
 
   req->dma_addr = dma_addr;
-  req->buffer_id = slot;
+  req->buffer_id = id;
+  req->user_addr = (unsigned long)id * PAGE_SIZE; /* mmap() offset convention */
 
-  set_dev_node(&cmem_cma_pdev.dev, NUMA_NO_NODE);
-
-  pr_info("cmem_cma: Allocated %zu bytes at DMA addr %pad, buffer ID %d, "
-          "NUMA node %d\n",
-          req->size, &dma_addr, slot, target_node);
-
-  mutex_unlock(&buffer_mutex);
+  pr_info("cmem_cma: allocated %zu bytes at DMA addr %pad, buffer ID %u, "
+          "requested NUMA node %d\n",
+          req->size, &dma_addr, id, req->numa_node);
 
   return 0;
 }
@@ -198,30 +306,24 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req,
  * @param req Pointer to free request containing the buffer ID
  * @return 0 on success, -EINVAL if invalid ID or already free
  */
-static int cmem_cma_free_buffer(struct cmem_cma_free_req *req,
-                                struct cmem_cma_filp_data *priv_data) {
-  int slot = req->buffer_id;
+static int cmem_cma_free_buffer(struct cmem_cma_free_req *req) {
+  struct dma_buffer *buf;
 
-  if (slot < 0 || slot >= MAX_BUFFERS)
+  if (req->buffer_id < 0)
     return -EINVAL;
 
   mutex_lock(&buffer_mutex);
-
-  if (!buffers[slot].allocated && buffers[slot].owner != priv_data) {
-    mutex_unlock(&buffer_mutex);
-    return -EINVAL;
-  }
-
-  dma_free_coherent(&cmem_cma_pdev.dev, buffers[slot].size, buffers[slot].vaddr,
-                    buffers[slot].dma_addr);
-
-  pr_debug("cmem_cma: Freed buffer ID %d, size %zu bytes\n", slot,
-           buffers[slot].size);
-
-  memset(&buffers[slot], 0, sizeof(struct dma_buffer));
-
+  buf = xa_erase(&cmem_buffers, req->buffer_id);
   mutex_unlock(&buffer_mutex);
 
+  if (!buf)
+    return -EINVAL;
+
+  dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
+
+  pr_info("cmem_cma: freed buffer ID %d, size %zu bytes\n", req->buffer_id, buf->size);
+
+  kfree(buf);
   return 0;
 }
 
@@ -231,27 +333,74 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req,
  * @param info Pointer to user-space structure to fill with info
  * @return 0 on success
  */
-static int cmem_cma_get_info(struct cmem_cma_info *info, struct cmem_cma_filp_data *priv_data) {
+static int cmem_cma_get_info(struct cmem_cma_info *info) {
+  struct dma_buffer *buf;
+  unsigned long index;
   int count = 0;
   size_t total = 0;
 
   mutex_lock(&buffer_mutex);
-
-  for (int idx = 0; idx < MAX_BUFFERS; idx++) {
-    if (buffers[idx].allocated && buffers[idx].owner == priv_data) {
-      count++;
-      total += buffers[idx].size;
-    }
+  xa_for_each(&cmem_buffers, index, buf) {
+    count++;
+    total += buf->size;
   }
+  mutex_unlock(&buffer_mutex);
 
   info->num_buffers = count;
   info->total_allocated = total;
-  info->numa_nodes_available = n_enabled_numa_nodes;
-
-  mutex_unlock(&buffer_mutex);
+  info->numa_nodes_available = nr_node_ids;
 
   return 0;
 }
+
+/**
+ * @brief Print internal driver information to /proc/cmem_cma
+ */
+static int cmem_cma_proc_show(struct seq_file *m, void *v) {
+  struct dma_buffer *buf;
+  unsigned long index;
+  int count = 0;
+  size_t total = 0;
+
+  seq_puts(m, "cmem_cma driver status\n");
+  seq_puts(m, "-----------------------\n");
+  seq_printf(m, "max_allocation_size:   %lu bytes\n", effective_max_alloc_size);
+  seq_printf(m, "max_buffers:           %u\n", effective_max_buffers);
+  seq_printf(m, "numa_nodes_available:  %d\n", nr_node_ids);
+  seq_printf(m, "numa_nodes_registered: %d\n", cmem_cma_num_nodes);
+  seq_puts(m, "\n");
+  seq_printf(m, "%-8s %-14s %-6s %-18s\n", "ID", "SIZE(bytes)", "NODE", "DMA_ADDR");
+
+  mutex_lock(&buffer_mutex);
+  xa_for_each(&cmem_buffers, index, buf) {
+    seq_printf(m, "%-8lu %-14zu %-6d 0x%016llx\n",
+               index, buf->size, buf->numa_node,
+               (unsigned long long)buf->dma_addr);
+    count++;
+    total += buf->size;
+  }
+  mutex_unlock(&buffer_mutex);
+
+  seq_puts(m, "\n");
+  seq_printf(m, "total buffers:   %d\n", count);
+  seq_printf(m, "total allocated: %zu bytes\n", total);
+
+  return 0;
+}
+
+static int cmem_cma_proc_open(struct inode *inode, struct file *file) {
+  if (!capable(CAP_SYS_RAWIO))
+    return -EPERM;
+
+  return single_open(file, cmem_cma_proc_show, NULL);
+}
+
+static const struct proc_ops cmem_cma_proc_ops = {
+    .proc_open    = cmem_cma_proc_open,
+    .proc_read    = seq_read,
+    .proc_lseek   = seq_lseek,
+    .proc_release = single_release,
+};
 
 /**
  * @brief Memory mapping support for DMA buffers
@@ -261,58 +410,47 @@ static int cmem_cma_get_info(struct cmem_cma_info *info, struct cmem_cma_filp_da
  * @return 0 on success, negative error code on failure
  */
 static int cmem_cma_mmap(struct file *filp, struct vm_area_struct *vma) {
-  unsigned long size = vma->vm_end - vma->vm_start;
-  unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-  int buffer_id =
-      offset / PAGE_SIZE; // Simple mapping: offset = buffer_id * PAGE_SIZE
+  unsigned long len = vma->vm_end - vma->vm_start;
+  unsigned long saved_pgoff = vma->vm_pgoff;
+  struct dma_buffer *buf;
+  int buffer_id;
+  int ret;
 
-  pr_debug("cmem_cma: mmap called, size=%lu, offset=%lu\n", size, offset);
-
-  if (buffer_id < 0 || buffer_id >= MAX_BUFFERS) {
-    pr_err("cmem_cma: Invalid buffer ID %d for mmap\n", buffer_id);
+  if (saved_pgoff >= effective_max_buffers)
     return -EINVAL;
-  }
+  buffer_id = (int)saved_pgoff;
+
+  pr_info("cmem_cma: mmap called for buffer %d, len=%lu\n", buffer_id, len);
 
   mutex_lock(&buffer_mutex);
 
-  if (!buffers[buffer_id].allocated &&
-      buffers[buffer_id].owner != filp->private_data) {
-    pr_err("cmem_cma: Buffer ID %d not allocated\n", buffer_id);
+  buf = xa_load(&cmem_buffers, buffer_id);
+  if (!buf) {
+    pr_err("cmem_cma: buffer ID %d not allocated\n", buffer_id);
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
   }
 
-  if (size > buffers[buffer_id].size) {
-    pr_err("cmem_cma: mmap size %lu exceeds buffer size %zu\n", size,
-           buffers[buffer_id].size);
+  if (len > buf->size) {
+    pr_err("cmem_cma: mmap size %lu exceeds buffer size %zu\n", len, buf->size);
     mutex_unlock(&buffer_mutex);
     return -EINVAL;
   }
 
-  unsigned long pgoff;
-
-  pgoff = vma->vm_pgoff;
   vma->vm_pgoff = 0;
-  int ret = dma_mmap_coherent(&cmem_cma_pdev.dev, vma, buffers[buffer_id].vaddr,
-                              buffers[buffer_id].dma_addr, size);
-  vma->vm_pgoff = pgoff;
-  vma->vm_ops = &cmem_cma_vm_ops;
-  vma->vm_private_data = &buffers[buffer_id];
-
-  if (ret) {
-    pr_err("cmem_cma: Failed allocating coherent memory! kernel virtual "
-           "address: %pK - dma address: %llx - size of allocation: %zu",
-           buffers[buffer_id].vaddr,
-           (unsigned long long)buffers[buffer_id].dma_addr, size);
-
-    mutex_unlock(&buffer_mutex);
-    return -ENOMEM;
-  }
+  ret = dma_mmap_coherent(buf->dev, vma, buf->vaddr, buf->dma_addr, len);
+  vma->vm_pgoff = saved_pgoff;
 
   mutex_unlock(&buffer_mutex);
-  pr_info("cmem_cma: Successfully mapped buffer %d, size %lu\n",
-          buffer_id, size);
 
+  if (ret) {
+    pr_err("cmem_cma: dma_mmap_coherent failed for buffer %d (vaddr=%pK, "
+           "dma_addr=%pad, len=%lu): %d\n",
+           buffer_id, buf->vaddr, &buf->dma_addr, len, ret);
+    return ret;
+  }
+
+  pr_debug("cmem_cma: successfully mapped buffer %d, size %lu\n", buffer_id, len);
   return 0;
 }
 
@@ -331,17 +469,21 @@ static long cmem_cma_ioctl(struct file *filp, unsigned int cmd,
   switch (cmd) {
   case CMEM_CMA_ALLOC: {
     struct cmem_cma_alloc_req req;
+
+    if (!capable(CAP_SYS_RAWIO))
+      return -EPERM;
+
     if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
       return -EFAULT;
 
-    ret = cmem_cma_alloc_buffer(&req, filp->private_data);
+    ret = cmem_cma_alloc_buffer(&req);
     if (ret)
       return ret;
 
     if (copy_to_user((void __user *)arg, &req, sizeof(req))) {
       struct cmem_cma_free_req free_req = {.buffer_id = req.buffer_id};
 
-      cmem_cma_free_buffer(&free_req, filp->private_data);
+      cmem_cma_free_buffer(&free_req);
       return -EFAULT;
     }
     break;
@@ -352,13 +494,13 @@ static long cmem_cma_ioctl(struct file *filp, unsigned int cmd,
     if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
       return -EFAULT;
 
-    ret = cmem_cma_free_buffer(&req, filp->private_data);
+    ret = cmem_cma_free_buffer(&req);
     break;
   }
 
   case CMEM_CMA_GET_INFO: {
     struct cmem_cma_info info;
-    ret = cmem_cma_get_info(&info, filp->private_data);
+    ret = cmem_cma_get_info(&info);
     if (ret)
       return ret;
 
@@ -378,55 +520,32 @@ static long cmem_cma_ioctl(struct file *filp, unsigned int cmd,
  * @brief Free all allocated buffers
  */
 static void cmem_cma_free_all_buffers(void) {
+  struct dma_buffer *buf;
+  unsigned long index;
+
   mutex_lock(&buffer_mutex);
-  for (int i = 0; i < MAX_BUFFERS; i++) {
-    if (buffers[i].allocated) {
-      dma_free_coherent(&cmem_cma_pdev.dev, buffers[i].size, buffers[i].vaddr,
-                        buffers[i].dma_addr);
-      memset(&buffers[i], 0, sizeof(struct dma_buffer));
-      pr_debug("cmem_cma: Freed buffer %d \n", i);
-    }
+  xa_for_each(&cmem_buffers, index, buf) {
+    dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
+    pr_debug("cmem_cma: freed buffer %lu\n", index);
+    kfree(buf);
   }
+  xa_destroy(&cmem_buffers);
   mutex_unlock(&buffer_mutex);
 }
 
 /**
- * @brief Free all allocated buffers owned by a userpace process
- */
-static void
-cmem_cma_free_filp_owned_buffers(struct cmem_cma_filp_data *priv_data) {
-  for (int idx = 0; idx < MAX_BUFFERS; idx++) {
-    if (buffers[idx].owner == priv_data) {
-      memset(&buffers[idx], 0, sizeof(struct dma_buffer));
-    }
-  }
-}
-
-/**
  * @brief Called when the device file is opened
- *
- * @param inode Pointer to inode structure
- * @param filp Pointer to file structure
- * @return Always returns 0
  */
 static int cmem_cma_open(struct inode *inode, struct file *filp) {
-  struct cmem_cma_filp_data *fd = kzalloc(sizeof(*fd), GFP_KERNEL);
-  if (!fd)
-    return -ENOMEM;
-  filp->private_data = fd;
+  pr_info("cmem_cma: Device opened\n");
   return 0;
 }
 
 /**
  * @brief Called when the device file is closed
- *
- * @param inode Pointer to inode structure
- * @param filp Pointer to file structure
- * @return Always returns 0
  */
 static int cmem_cma_release(struct inode *inode, struct file *filp) {
   pr_info("cmem_cma: Device closed\n");
-  cmem_cma_free_filp_owned_buffers(filp->private_data);
   return 0;
 }
 
@@ -445,40 +564,28 @@ static const struct file_operations cmem_cma_fops = {
 };
 
 /**
- * @brief Module initialization function
+ * @brief Module initialization
  *
- * Registers the platform device, character device, and sets up DMA.
+ * Registers the per-node platform devices, character device, and class.
  *
  * @return 0 on success, negative error code on failure
  */
 static int __init cmem_cma_init(void) {
   int ret;
 
-  pr_debug("cmem_cma: Initializing CMA DMA allocator module\n");
+  pr_info("cmem_cma: Initializing CMA DMA allocator module\n");
 
-  setup_numa_nodes();
+  cmem_cma_compute_limits();
 
-  ret = platform_device_register(&cmem_cma_pdev);
-  if (ret) {
-    pr_err("cmem_cma: Failed to register platform device\n");
+  ret = cmem_cma_register_node_devices();
+  if (ret)
     return ret;
-  }
-
-  ret = dma_set_mask_and_coherent(&cmem_cma_pdev.dev, DMA_BIT_MASK(64));
-  if (ret) {
-    pr_warn("cmem_cma: Failed to set 64-bit DMA mask, trying 32-bit\n");
-    ret = dma_set_mask_and_coherent(&cmem_cma_pdev.dev, DMA_BIT_MASK(32));
-    if (ret) {
-      pr_err("cmem_cma: Failed to set DMA mask\n");
-      goto err_platform;
-    }
-  }
 
   major_number = register_chrdev(0, DEVICE_NAME, &cmem_cma_fops);
   if (major_number < 0) {
     pr_err("cmem_cma: Failed to register character device\n");
     ret = major_number;
-    goto err_platform;
+    goto err_nodes;
   }
 
   cmem_cma_class = class_create(CLASS_NAME);
@@ -496,11 +603,14 @@ static int __init cmem_cma_init(void) {
     goto err_class;
   }
 
-  memset(buffers, 0, sizeof(buffers));
+  cmem_cma_proc_entry = proc_create(DEVICE_NAME, 0400, NULL, &cmem_cma_proc_ops);
+  if (!cmem_cma_proc_entry)
+    pr_warn("cmem_cma: failed to create /proc/%s entry (continuing without it)\n",
+            DEVICE_NAME);
 
-  pr_info("cmem_cma: Module loaded successfully, major number %d\n",
-          major_number);
-  pr_info("cmem_cma: NUMA nodes available: %d\n", n_enabled_numa_nodes);
+  pr_info("cmem_cma: Module loaded successfully, major number %d, "
+          "%d NUMA node device(s) registered\n",
+          major_number, cmem_cma_num_nodes);
 
   return 0;
 
@@ -508,25 +618,26 @@ err_class:
   class_destroy(cmem_cma_class);
 err_chrdev:
   unregister_chrdev(major_number, DEVICE_NAME);
-err_platform:
-  platform_device_unregister(&cmem_cma_pdev);
+err_nodes:
+  cmem_cma_unregister_node_devices();
   return ret;
 }
 
 /**
- * @brief Module cleanup function
- *
- * Frees any remaining DMA buffers, unregisters devices and class
+ * @brief Module cleanup
  */
 static void __exit cmem_cma_exit(void) {
   pr_info("cmem_cma: Cleaning up module\n");
+
+  if (cmem_cma_proc_entry)
+    proc_remove(cmem_cma_proc_entry);
 
   device_destroy(cmem_cma_class, MKDEV(major_number, 0));
   class_destroy(cmem_cma_class);
   unregister_chrdev(major_number, DEVICE_NAME);
 
   cmem_cma_free_all_buffers();
-  platform_device_unregister(&cmem_cma_pdev);
+  cmem_cma_unregister_node_devices();
 
   pr_info("cmem_cma: Module unloaded\n");
 }
@@ -537,4 +648,4 @@ module_exit(cmem_cma_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mario Shehu");
 MODULE_DESCRIPTION("CMA DMA Buffer Allocator with NUMA Support");
-MODULE_VERSION("1.1");
+MODULE_VERSION("2.0");
