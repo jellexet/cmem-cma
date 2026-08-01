@@ -47,8 +47,8 @@ struct cmem_cma_alloc_req {
   size_t size;    /**< Requested size of the DMA buffer (in bytes) */
   int numa_node;  /**< NUMA node to allocate from, or -1 for default */
   __u64 dma_addr; /**< (Out) DMA address (physical) of the allocated buffer */
-  unsigned long user_addr; /**< (Out) User-space accessible virtual address */
-  int buffer_id;           /**< (Out) Internal ID of the allocated buffer */
+  unsigned long mmap_offset; /**< (Out) buffer_id * PAGE_SIZE */
+  int buffer_id;             /**< (Out) Internal ID of the allocated buffer */
 };
 
 /**

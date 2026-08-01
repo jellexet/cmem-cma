@@ -32,7 +32,7 @@
 /* Default value of the max_allocation_size module parameter, in bytes. */
 #define CMEM_CMA_DEFAULT_MAX_ALLOC_SIZE (8UL * 1024 * 1024 * 1024) /* 8 GiB */
 
-/* Maximum number of concurrently open buffer IDs */
+/* Maximum number of concurrently open buffers */
 #define CMEM_CMA_HARD_MAX_BUFFERS  65536
 
 /* Read-only encoding. */
@@ -112,7 +112,7 @@ static void cmem_cma_compute_limits(void) {
                                    effective_max_alloc_size / CMEM_CMA_MIN_BUFFER_SIZE,
                                    1, CMEM_CMA_HARD_MAX_BUFFERS);
 
-  pr_info("cmem_cma: effective max allocation size = %lu bytes, "
+  pr_debug("cmem_cma: effective max allocation size = %lu bytes, "
           "max concurrent buffers = %u\n",
           effective_max_alloc_size, effective_max_buffers);
 }
@@ -244,18 +244,18 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   int ret;
 
   if (req->size == 0) {
-    pr_err("cmem_cma: rejected zero-length allocation request\n");
+    pr_err_ratelimited("cmem_cma: rejected zero-length allocation request\n");
     return -EINVAL;
   }
 
   if (req->size > effective_max_alloc_size) {
-    pr_err("cmem_cma: requested size %zu exceeds max_allocation_size (%lu bytes)\n",
+    pr_err_ratelimited("cmem_cma: requested size %zu exceeds max_allocation_size (%lu bytes)\n",
            req->size, effective_max_alloc_size);
     return -EINVAL;
   }
 
   if (req->numa_node < -1 || req->numa_node >= nr_node_ids) {
-    pr_err("cmem_cma: invalid NUMA node %d\n", req->numa_node);
+    pr_err_ratelimited("cmem_cma: invalid NUMA node %d\n", req->numa_node);
     return -EINVAL;
   }
 
@@ -291,7 +291,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
 
   req->dma_addr = dma_addr;
   req->buffer_id = id;
-  req->user_addr = (unsigned long)id * PAGE_SIZE; /* mmap() offset convention */
+  req->mmap_offset = (unsigned long)id * PAGE_SIZE; /* mmap() offset convention */
 
   pr_info("cmem_cma: allocated %zu bytes at DMA addr %pad, buffer ID %u, "
           "requested NUMA node %d\n",
