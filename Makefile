@@ -18,6 +18,9 @@ USERSPACE_PROG := cmem_cma_test
 # Debug flag
 DEBUG ?= 0
 
+# Module parameters to use with make install
+MODULE_PARAMS ?=
+
 # Normal flags
 ccflags-y += \
 	-Wall \
@@ -57,7 +60,7 @@ clean:
 
 # Install module (requires root)
 install: module
-	sudo insmod cmem-cma.ko
+	sudo insmod cmem-cma.ko $(MODULE_PARAMS)
 
 # Remove module (requires root)
 remove:
@@ -87,7 +90,7 @@ help:
 	@echo "Module targets:"
 	@echo "  module   - Build kernel module only"
 	@echo "  debug    - Build kernel module only whith debug output enabled"
-	@echo "  install  - Install kernel module"
+	@echo "  install  - Install kernel module (MODULE_PARAMS=\"name=value\")"
 	@echo "  remove   - Remove kernel module" 
 	@echo "  reload   - Remove and reinstall kernel module"
 	@echo "  status   - Check module status and recent kernel messages"
@@ -107,5 +110,6 @@ help:
 	@echo "Example usage:"
 	@echo "  make all              # Build everything"
 	@echo "  make reload           # Reload kernel module"
+	@echo "  make install MODULE_PARAMS=\"max_allocation_size=536870912\" # Install with 512MB capacity"
 
 .PHONY: all module userspace clean install remove reload status info test help
