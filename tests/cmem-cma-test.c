@@ -433,6 +433,8 @@ int main(int argc, char *argv[])
     if (fd < 0) {
         perror("Failed to open device");
         printf("Make sure the kernel module is loaded and device exists at %s\n", DEVICE_PATH);
+        fprintf(stderr,
+            "Run this test as root, e.g. 'sudo %s -t'\n", g_prog_name);
         return 1;
     }
 

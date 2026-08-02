@@ -5,6 +5,7 @@
  */
 
 #include "cmem-cma.h"
+#include "linux/printk.h"
 #include <linux/capability.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
@@ -165,7 +166,7 @@ static int cmem_cma_register_node_devices(void) {
     pr_info("cmem_cma: registered DMA device for NUMA node %d\n", node);
   }
 
-  if (first_online_node >= cmem_cma_num_nodes ||
+  if ((int)first_online_node >= cmem_cma_num_nodes ||
       !cmem_cma_node_devs[first_online_node].registered) {
     pr_err("cmem_cma: no usable NUMA node device was registered\n");
     ret = -ENODEV;
@@ -254,7 +255,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
     return -EINVAL;
   }
 
-  if (req->numa_node < -1 || req->numa_node >= nr_node_ids) {
+  if (req->numa_node < -1 || req->numa_node >= (int)nr_node_ids) {
     pr_err_ratelimited("cmem_cma: invalid NUMA node %d\n", req->numa_node);
     return -EINVAL;
   }
@@ -293,7 +294,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   req->buffer_id = id;
   req->mmap_offset = (unsigned long)id * PAGE_SIZE; /* mmap() offset convention */
 
-  pr_info("cmem_cma: allocated %zu bytes at DMA addr %pad, buffer ID %u, "
+  pr_debug_ratelimited("cmem_cma: allocated %zu bytes at DMA addr %pad, buffer ID %u, "
           "requested NUMA node %d\n",
           req->size, &dma_addr, id, req->numa_node);
 
@@ -321,7 +322,7 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req) {
 
   dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
 
-  pr_info("cmem_cma: freed buffer ID %d, size %zu bytes\n", req->buffer_id, buf->size);
+  pr_debug_ratelimited("cmem_cma: freed buffer ID %d, size %zu bytes\n", req->buffer_id, buf->size);
 
   kfree(buf);
   return 0;
@@ -367,7 +368,7 @@ static int cmem_cma_proc_show(struct seq_file *m, void *v) {
   seq_puts(m, "-----------------------\n");
   seq_printf(m, "max_allocation_size:   %lu MB\n", max_allocation_MB);
   seq_printf(m, "max_buffers:           %u\n", effective_max_buffers);
-  seq_printf(m, "numa_nodes_available:  %d\n", nr_node_ids);
+  seq_printf(m, "numa_nodes_available:  %ud\n", nr_node_ids);
   seq_printf(m, "numa_nodes_registered: %d\n", cmem_cma_num_nodes);
   seq_puts(m, "\n");
   seq_printf(m, "%-8s %-14s %-6s %-18s\n", "ID", "SIZE(bytes)", "NODE", "DMA_ADDR");
