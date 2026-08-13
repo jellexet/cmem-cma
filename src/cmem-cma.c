@@ -122,6 +122,27 @@ static void cmem_cma_compute_limits(void)
 }
 
 /**
+ * @brief Unregister all per-node platform devices
+ *
+ * MUST be called only after every DMA buffer has already been freed
+ */
+static void cmem_cma_unregister_node_devices(void)
+{
+    int node;
+
+    if (!cmem_cma_node_devs)
+        return;
+
+    for_each_online_node(node)
+    {
+        if (cmem_cma_node_devs[node].registered)
+            platform_device_unregister(&cmem_cma_node_devs[node].pdev);
+    }
+    kfree(cmem_cma_node_devs);
+    cmem_cma_node_devs = NULL;
+}
+
+/**
  * @brief Register one platform device per online NUMA node
  *
  * @return 0 on success, negative errno on failure (nothing left registered)
@@ -177,35 +198,8 @@ static int cmem_cma_register_node_devices(void)
     return 0;
 
 unwind:
-    for_each_online_node(node)
-    {
-        if (cmem_cma_node_devs[node].registered)
-            platform_device_unregister(&cmem_cma_node_devs[node].pdev);
-    }
-    kfree(cmem_cma_node_devs);
-    cmem_cma_node_devs = NULL;
+    cmem_cma_unregister_node_devices();
     return ret;
-}
-
-/**
- * @brief Unregister all per-node platform devices
- *
- * MUST be called only after every DMA buffer has already been freed
- */
-static void cmem_cma_unregister_node_devices(void)
-{
-    int node;
-
-    if (!cmem_cma_node_devs)
-        return;
-
-    for_each_online_node(node)
-    {
-        if (cmem_cma_node_devs[node].registered)
-            platform_device_unregister(&cmem_cma_node_devs[node].pdev);
-    }
-    kfree(cmem_cma_node_devs);
-    cmem_cma_node_devs = NULL;
 }
 
 /**
@@ -216,7 +210,7 @@ static void cmem_cma_unregister_node_devices(void)
  *
  * If the argment is NUMA_NO_NODE, resolve to CPU's associated NUMA node.
  */
-static struct device* cmem_cma_get_node_device(int numa_node, int *out_node)
+static struct device* cmem_cma_get_node_device(int numa_node, int* out_node)
 {
     int node = numa_node;
 
@@ -239,7 +233,7 @@ static struct device* cmem_cma_get_node_device(int numa_node, int *out_node)
  * @param req Pointer to allocation request structure from user space
  * @return 0 on success, negative errno on failure
  */
-static int cmem_cma_alloc_buffer(struct file *filp, struct cmem_cma_alloc_req* req)
+static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* req)
 {
     struct xa_limit limit = {.min = 0, .max = effective_max_buffers - 1};
     struct dma_buffer* buf;
@@ -256,9 +250,8 @@ static int cmem_cma_alloc_buffer(struct file *filp, struct cmem_cma_alloc_req* r
     }
 
     if (req->size > effective_max_alloc_size) {
-        pr_err_ratelimited("cmem_cma: requested size %u exceeds max_allocation_size (%lu bytes)\n",
-                           req->size,
-                           effective_max_alloc_size);
+        pr_err_ratelimited(
+          "cmem_cma: requested size %u exceeds max_allocation_size (%lu bytes)\n", req->size, effective_max_alloc_size);
         return -EINVAL;
     }
 
@@ -282,9 +275,10 @@ static int cmem_cma_alloc_buffer(struct file *filp, struct cmem_cma_alloc_req* r
 
     buf->vaddr = vaddr;
     buf->dma_addr = dma_addr;
-    buf->size = req->size;
-    buf->numa_node = req->numa_node;
+    buf->size = (size_t)req->size;
+    buf->numa_node = resolved_node;
     buf->dev = dma_dev;
+    buf->owner = filp;
 
     mutex_lock(&buffer_mutex);
     ret = xa_alloc(&cmem_buffers, &buffer_id, buf, limit, GFP_KERNEL);
@@ -299,7 +293,8 @@ static int cmem_cma_alloc_buffer(struct file *filp, struct cmem_cma_alloc_req* r
 
     req->dma_addr = dma_addr;
     req->buffer_id = buffer_id;
-    req->mmap_offset = (unsigned long)buffer_id * PAGE_SIZE; /* mmap() offset convention */
+    req->numa_node = resolved_node;
+    req->mmap_offset = (u64)buffer_id * PAGE_SIZE; /* mmap() offset convention */
 
     pr_debug_ratelimited("cmem_cma: allocated %u bytes at DMA addr %pad, buffer ID %u, "
                          "requested NUMA node %d\n",
@@ -317,7 +312,7 @@ static int cmem_cma_alloc_buffer(struct file *filp, struct cmem_cma_alloc_req* r
  * @param req Pointer to free request containing the buffer ID
  * @return 0 on success, -EINVAL if invalid ID or already free
  */
-static int cmem_cma_free_buffer(struct file *filp, struct cmem_cma_free_req* req)
+static int cmem_cma_free_buffer(struct file* filp, struct cmem_cma_free_req* req)
 {
     struct dma_buffer* buf;
 
@@ -372,7 +367,7 @@ static int cmem_cma_get_info(struct cmem_cma_info* info)
 
     info->num_buffers = count;
     info->total_allocated = total;
-    info->numa_nodes_available = nr_node_ids;
+    info->numa_nodes_available = (int)nr_node_ids;
     info->max_allocation_size = effective_max_alloc_size;
     info->max_buffers = effective_max_buffers;
     info->reserved0 = 0;
@@ -464,7 +459,7 @@ static int cmem_cma_mmap(struct file* filp, struct vm_area_struct* vma)
         return -EINVAL;
     }
 
-    if(buf->owner != filp) {
+    if (buf->owner != filp) {
         pr_warn_ratelimited("cmem_cma: non owning fd tried mmap of buffer %d. Refused.", buffer_id);
         mutex_unlock(&buffer_mutex);
         return -EPERM;
@@ -578,34 +573,34 @@ static void cmem_cma_free_all_buffers(void)
     mutex_unlock(&buffer_mutex);
 }
 
-
 /**
  * @brief Free buffers owned by a single file
  *
  * On release free all the buffers owned by a specific file.
- * Avoids memory leak when a process crashes. 
+ * Avoids memory leak when a process crashes.
  */
-static void cmem_cma_release_owned_buffers(struct file *filp)
+static void cmem_cma_release_owned_buffers(struct file* filp)
 {
-    struct dma_buffer *buf;
+    struct dma_buffer* buf;
     unsigned long idx;
     int freed = 0;
 
     mutex_lock(&buffer_mutex);
-    xa_for_each(&cmem_buffers, idx, buf) {
+    xa_for_each(&cmem_buffers, idx, buf)
+    {
         if (buf->owner != filp)
             continue;
 
         xa_erase(&cmem_buffers, idx);
         dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
- 
+
         kfree(buf);
         freed++;
     }
     mutex_unlock(&buffer_mutex);
     pr_debug("cmem_cma: released %d buffers held by a closing fd\n", freed);
 }
- 
+
 /**
  * @brief Called when the device file is opened
  */
