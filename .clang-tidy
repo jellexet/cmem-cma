@@ -1,0 +1,20 @@
+---
+Checks: >
+  -*,
+  clang-analyzer-core*,
+  misc*,
+  -misc-include-cleaner,
+  bugprone*,
+  -bugprone-assignment-in-if-condition,
+  lang*,
+  concurrency-*,
+  llvm-*,
+  -llvm-include-order,
+  modernize*,
+  -modernize-use-trailing-return-type,
+  portability*,
+  readability*,
+WarningsAsErrors: ''
+HeaderFilterRegex: ''
+FormatStyle:     'file'
+...
