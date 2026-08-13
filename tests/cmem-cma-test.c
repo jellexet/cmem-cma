@@ -91,7 +91,7 @@ static int show_device_info(int fd)
 
     printf("Device Information:\n");
     printf("  Active buffers: %d\n", info.num_buffers);
-    printf("  Total allocated: %zu bytes (%.2f MB)\n", 
+    printf("  Total allocated: %llu bytes (%.2f MB)\n", 
            info.total_allocated, (double)info.total_allocated / (1024*1024));
     printf("  NUMA nodes available: %d\n", info.numa_nodes_available);
 
@@ -216,7 +216,7 @@ static int test_allocation_with_access(int fd, size_t size, int numa_node)
     printf("Success!\n");
     printf("  Buffer ID: %d\n", alloc_req.buffer_id);
     printf("  DMA Address: 0x%lx\n", (unsigned long)alloc_req.dma_addr);
-    printf("  mmap offset: 0x%lx (pass as the offset argument to mmap())\n",
+    printf("  mmap offset: 0x%llx (pass as the offset argument to mmap())\n",
            alloc_req.mmap_offset);
 
     mapped_addr = map_dma_buffer(fd, alloc_req.buffer_id, size, alloc_req.mmap_offset);
@@ -267,7 +267,7 @@ static int comprehensive_test(int fd)
             req.size = test_sizes[i];
             req.numa_node = node;
 
-            printf("Test %d: Allocating %zu bytes on node %d... ", 
+            printf("Test %d: Allocating %llu bytes on node %d... ", 
                    allocated_count + 1, req.size, node);
 
             if (ioctl(fd, CMEM_CMA_ALLOC, &req) < 0) {
@@ -322,7 +322,7 @@ static int comprehensive_test(int fd)
         struct cmem_cma_free_req free_req = {0};
         free_req.buffer_id = buffers[i].buffer_id;
 
-        printf("Freeing buffer %d (size %zu)... ", 
+        printf("Freeing buffer %d (size %lu)... ", 
                buffers[i].buffer_id, buffers[i].size);
         
         if (ioctl(fd, CMEM_CMA_FREE, &free_req) < 0) {
@@ -354,7 +354,7 @@ static int memory_benchmark_test(int fd)
         req.size = test_sizes[i];
         req.numa_node = -1;  // Any node
 
-        printf("\nBenchmark %d: %zu bytes (%.1f MB)\n", 
+        printf("\nBenchmark %d: %llu bytes (%.1f MB)\n", 
                i + 1, req.size, (double)req.size / (1024*1024));
 
         if (ioctl(fd, CMEM_CMA_ALLOC, &req) < 0) {

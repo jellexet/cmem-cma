@@ -40,15 +40,18 @@
  * @struct cmem_cma_alloc_req
  * @brief Request/response structure for DMA buffer allocation
  *
- * Userspace initializes `size` and optionally `numa_node`. Kernel fills in the
- * rest.
+ * Userspace initializes `size` and optionally `numa_node`.
+ * Kernel fills in `dma_addr`, `mmap_offset`, `buffer_id`.
+ * `numa_node` is overwritten with the actual NUMA node on which memory has been allocated.
  */
 struct cmem_cma_alloc_req {
-  size_t size;    /**< Requested size of the DMA buffer (in bytes) */
-  int numa_node;  /**< NUMA node to allocate from, or -1 for default */
-  __u64 dma_addr; /**< (Out) DMA address (physical) of the allocated buffer */
-  unsigned long mmap_offset; /**< (Out) buffer_id * PAGE_SIZE */
-  int buffer_id;             /**< (Out) Internal ID of the allocated buffer */
+    __u64 size;        /**< Requested size of the DMA buffer (in bytes) */
+    __u32 numa_node;   /**< (In) NUMA node to allocate from, or -1 for default
+                            (Out) NUMA node actually used. */
+    __u64 dma_addr;    /**< (Out) DMA (bus) address of the allocated buffer */
+    __u64 mmap_offset; /**< (Out) Offset argument to 'mmap()' of this fd: buffer_id * PAGE_SIZE */
+    __s32 buffer_id;   /**< (Out) Internal ID of the allocated buffer */
+    __u32 reserved0;   /**< Reserved for future use */
 };
 
 /**
@@ -56,7 +59,8 @@ struct cmem_cma_alloc_req {
  * @brief Request structure for DMA buffer deallocation
  */
 struct cmem_cma_free_req {
-  int buffer_id; /**< ID of the buffer to free */
+    __s32 buffer_id; /**< ID of the buffer to free */
+    __u32 reserved0; /**< Reserved for future use */
 };
 
 /**
@@ -64,9 +68,12 @@ struct cmem_cma_free_req {
  * @brief Information structure returned by the CMEM_CMA_GET_INFO ioctl
  */
 struct cmem_cma_info {
-  int num_buffers;          /**< Current number of allocated buffers */
-  size_t total_allocated;   /**< Total allocated memory (in bytes) */
-  int numa_nodes_available; /**< Number of NUMA nodes detected by the kernel */
+    __s32 num_buffers;          /**< Current number of allocated buffers */
+    __u64 total_allocated;      /**< Total allocated memory (in bytes) */
+    __s32 numa_nodes_available; /**< Number of NUMA nodes detected by the kernel */
+    __u64 max_allocation_size;  /**< Maximum total allocation size (in bytes) */
+    __u32 max_buffers;          /**< Maximum number of buffers that can be allocated */
+    __u32 reserved0;            /**< Reserved for future use */
 };
 
 #endif /* CMEM_CMA_H */

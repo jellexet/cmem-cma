@@ -49,9 +49,10 @@ struct dma_buffer {
   void *vaddr;          /**< Virtual address visible to the kernel */
   dma_addr_t dma_addr;  /**< Physical (DMA) address of the buffer */
   size_t size;          /**< Size of the buffer in bytes */
-  int numa_node;         /**< NUMA node */
-  struct device *dev;    /**< Device the allocation was made against; the
+  int numa_node;        /**< NUMA node on which memory is allocated*/
+  struct device *dev;   /**< Device the allocation was made against; the
                               matching device must be used for freeing */
+  struct file *owner;   /**< The open file (fd) that allocated this buffer. */
 };
 
 /*
@@ -241,7 +242,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   struct device *dma_dev;
   void *vaddr;
   dma_addr_t dma_addr;
-  u32 id;
+  __s32 id;
   int ret;
 
   if (req->size == 0) {
@@ -250,7 +251,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   }
 
   if (req->size > effective_max_alloc_size) {
-    pr_err_ratelimited("cmem_cma: requested size %zu exceeds max_allocation_size (%lu bytes)\n",
+    pr_err_ratelimited("cmem_cma: requested size %llu exceeds max_allocation_size (%lu bytes)\n",
            req->size, effective_max_alloc_size);
     return -EINVAL;
   }
@@ -268,7 +269,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
 
   vaddr = dma_alloc_coherent(dma_dev, req->size, &dma_addr, GFP_KERNEL);
   if (!vaddr) {
-    pr_err("cmem_cma: failed to allocate DMA buffer of size %zu\n", req->size);
+    pr_err("cmem_cma: failed to allocate DMA buffer of size %llu\n", req->size);
     kfree(buf);
     return -ENOMEM;
   }
@@ -294,7 +295,7 @@ static int cmem_cma_alloc_buffer(struct cmem_cma_alloc_req *req) {
   req->buffer_id = id;
   req->mmap_offset = (unsigned long)id * PAGE_SIZE; /* mmap() offset convention */
 
-  pr_debug_ratelimited("cmem_cma: allocated %zu bytes at DMA addr %pad, buffer ID %u, "
+  pr_debug_ratelimited("cmem_cma: allocated %llu bytes at DMA addr %pad, buffer ID %u, "
           "requested NUMA node %d\n",
           req->size, &dma_addr, id, req->numa_node);
 
@@ -322,7 +323,7 @@ static int cmem_cma_free_buffer(struct cmem_cma_free_req *req) {
 
   dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
 
-  pr_debug_ratelimited("cmem_cma: freed buffer ID %d, size %zu bytes\n", req->buffer_id, buf->size);
+  pr_debug_ratelimited("cmem_cma: freed buffer ID %d, size %lu bytes\n", req->buffer_id, buf->size);
 
   kfree(buf);
   return 0;
@@ -375,7 +376,7 @@ static int cmem_cma_proc_show(struct seq_file *m, void *v) {
 
   mutex_lock(&buffer_mutex);
   xa_for_each(&cmem_buffers, index, buf) {
-    seq_printf(m, "%-8lu %-14zu %-6d 0x%016llx\n",
+    seq_printf(m, "%-8lu %-14lu %-6d 0x%016llx\n",
                index, buf->size, buf->numa_node,
                (unsigned long long)buf->dma_addr);
     count++;
