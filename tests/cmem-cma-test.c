@@ -267,7 +267,7 @@ static int comprehensive_test(int fd)
             req.size = test_sizes[i];
             req.numa_node = node;
 
-            printf("Test %d: Allocating %llu bytes on node %d... ", 
+            printf("Test %d: Allocating %u bytes on node %d... ", 
                    allocated_count + 1, req.size, node);
 
             if (ioctl(fd, CMEM_CMA_ALLOC, &req) < 0) {
@@ -354,7 +354,7 @@ static int memory_benchmark_test(int fd)
         req.size = test_sizes[i];
         req.numa_node = -1;  // Any node
 
-        printf("\nBenchmark %d: %llu bytes (%.1f MB)\n", 
+        printf("\nBenchmark %d: %u bytes (%.1f MB)\n", 
                i + 1, req.size, (double)req.size / (1024*1024));
 
         if (ioctl(fd, CMEM_CMA_ALLOC, &req) < 0) {
