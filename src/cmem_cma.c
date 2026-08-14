@@ -4,7 +4,7 @@
  * awareness
  */
 
-#include "cmem-cma.h"
+#include "cmem_cma.h"
 #include "linux/printk.h"
 #include <linux/capability.h>
 #include <linux/cdev.h>

@@ -1,10 +1,10 @@
-# Makefile for cmem-cma kernel module
+# Makefile for cmem_cma kernel module
 
 # Module name and object files
-obj-m := cmem-cma.o
+obj-m := cmem_cma.o
 
 # Source files for the module
-cmem-cma-objs := src/cmem-cma.o
+cmem_cma-objs := src/cmem_cma.o
 
 # Kernel build directory
 KDIR := /lib/modules/$(shell uname -r)/build
@@ -46,7 +46,7 @@ debug:
 
 # Build userspace test program (original)
 userspace:
-	gcc -Iheaders -o $(USERSPACE_PROG) tests/cmem-cma-test.c -lnuma -Wall -O2
+	gcc -Iheaders -o $(USERSPACE_PROG) tests/cmem_cma_test.c -lnuma -Wall -O2
 
 # Clean build artifacts
 clean:
@@ -60,7 +60,7 @@ clean:
 
 # Install module (requires root)
 install: module
-	sudo insmod cmem-cma.ko $(MODULE_PARAMS)
+	sudo insmod cmem_cma.ko $(MODULE_PARAMS)
 
 # Remove module (requires root)
 remove:
