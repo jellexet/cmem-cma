@@ -1,13 +1,13 @@
-#ifndef CMEM_CMA_H
-#define CMEM_CMA_H
+#ifndef CMEM_CMA_HPP
+#define CMEM_CMA_HPP
 
 /**
  * @file cmem_cma_uapi.hpp
  * @brief Copy of cmem_cma.h, header of the cmem_cma kernel module
  */
 
-#include <sys/ioctl.h>
-#include <sys/types.h>
+#include <linux/ioctl.h>
+#include <linux/types.h>
 
 #define DEVICE_NAME "cmem_cma" /**< Device name as seen in /dev */
 #define CLASS_NAME "cmem_cma"  /**< Device class name */
@@ -81,4 +81,4 @@ struct cmem_cma_info {
     __u32 reserved0;            /**< Reserved for future use */
 };
 
-#endif /* CMEM_CMA_H */
+#endif /* CMEM_CMA_HPP */
