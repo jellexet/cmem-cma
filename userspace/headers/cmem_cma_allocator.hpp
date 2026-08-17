@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <vector>
 
 #include "cmem_cma_buffer.hpp"
@@ -46,37 +47,44 @@ namespace cmem {
             if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
                 throw std::bad_array_new_length();
 
-            if (auto p = static_cast<T*>(std::malloc(n * sizeof(T)))) {
-                LOG_INFO(std::format("Allocated buffer of size {}", n));
-                return p;
+            try {
+                m_buffer.allocate(n, m_options.numa_node)
+
+            } catch (const std::logic_error& err) {
+                throw std::bad_alloc();
+            } catch (const std::length_error& err) {
+                throw std::bad_alloc();
+            } catch (const std::domain_error& err) {
+                throw std::bad_alloc();
             }
 
-            throw std::bad_alloc();
+            LOG_INFO(std::format("Allocated buffer of size {}", n));
+            auto p = static_cast<T*>(m_buffer.data());
+            return p;
         }
 
         void deallocate(T* p, std::size_t n) noexcept
         {
-            report(p, n, 0);
             LOG_INFO(std::format("Deallocated buffer of size {}", n));
-            std::free(p);
+            m_buffer.deallocate();
+        }
+
+        template<class T, class U>
+        bool operator==(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b)
+        {
+            return a.buffer_m.get_buffer_id() == b.buffer_m.get_buffer_id();
+        }
+
+        template<class T, class U>
+        bool operator!=(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b)
+        {
+            return a.buffer_m.get_buffer_id() != b.buffer_m.get_buffer_id();
         }
 
       private:
-        AllocatorOptions options_m{};
-        CmemCmaBuffer buffer_m;
+        AllocatorOptions m_options{};
+        CmemCmaBuffer m_buffer{};
     };
-
-    template<class T, class U>
-    bool operator==(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b)
-    {
-        return a.buffer_m.get_buffer_id() == b.buffer_m.get_buffer_id();
-    }
-
-    template<class T, class U>
-    bool operator!=(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b)
-    {
-        return a.buffer_m.get_buffer_id() != b.buffer_m.get_buffer_id();
-    }
 };  // namespace cmem
 
 #endif  // CMEM_CMA_ALLOCATOR_HPP

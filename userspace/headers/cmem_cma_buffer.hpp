@@ -1,44 +1,46 @@
 #ifndef CMEM_CMA_BUFFER_HPP
 #define CMEM_CMA_BUFFER_HPP
 
-#include "cmem_cma.hpp"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstddef>
-#include <memory>
+#include <filesystem>
 
 namespace cmem {
     class CmemCmaBuffer
     {
       public:
-        CmemCmaBuffer() = default;
+        CmemCmaBuffer(const std::filesystem::path& device_path = "/dev/cmem_cma");
         ~CmemCmaBuffer();
 
         CmemCmaBuffer& operator=(CmemCmaBuffer&) = delete;
         CmemCmaBuffer(CmemCmaBuffer& other) = delete;
+        CmemCmaBuffer& operator=(CmemCmaBuffer&&) = delete;
 
-        CmemCmaBuffer& operator=(CmemCmaBuffer&&) noexcept;
         CmemCmaBuffer(CmemCmaBuffer&& other) noexcept;
-        void* data() noexcept { return addr_m; }
+        void* data() noexcept { return m_virt_addr; }
 
-        [[nodiscard]] const uint64_t allocate(uint64_t size, int numa_node) noexcept;
-        void deallocate() noexcept;
+        void allocate(uint64_t size, int numa_node);
+        void deallocate();
 
-        [[nodiscard]] const void* data() const noexcept { return addr_m; }
-        [[nodiscard]] std::size_t size() const noexcept { return size_m; }
-        [[nodiscard]] std::uint64_t get_dma_address() const noexcept { return memory_address_m; }
-        [[nodiscard]] int get_numa_node() const noexcept { return numa_node_m; }
-        [[nodiscard]] std::uint32_t get_buffer_id() const noexcept { return buffer_id_m; }
+        [[nodiscard]] const void* data() const noexcept { return m_virt_addr; }
+        [[nodiscard]] std::size_t size() const noexcept { return m_size; }
+        [[nodiscard]] std::uint64_t get_dma_address() const noexcept { return m_phys_address; }
+        [[nodiscard]] int get_numa_node() const noexcept { return m_numa_node; }
+        [[nodiscard]] std::uint32_t get_buffer_id() const noexcept { return m_buffer_id; }
 
-        explicit operator bool() const noexcept { return addr_m != nullptr; }
+        explicit operator bool() const noexcept { return m_virt_addr != nullptr; }
 
       private:
-        int fd_m = -1;
-        int buffer_id_m = -1;
-        int numa_node_m = -1;
-        uint64_t size_m = 0;
-        uint64_t memory_address_m = 0;
-        void* addr_m = nullptr;
+        int m_fd{-1};  ///< The file descriptor for the /dev/cmem_rcc device.
+        int m_buffer_id{-1};
+        int m_numa_node{-1};
+        uint64_t m_offset{0};
+        uint64_t m_size{0};
+        uint64_t m_phys_address{0};
+        void* m_virt_addr{nullptr};
+        std::atomic<bool> m_is_open{false};  ///< Flag: true if a buffer has been created.
     };
 }  // namespace cmem
 
