@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstddef>
 #include <filesystem>
 
 namespace cmem {

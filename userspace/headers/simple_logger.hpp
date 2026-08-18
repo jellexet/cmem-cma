@@ -1,11 +1,12 @@
-#ifndef _SIMPLE_LOGGER_HPP
-#define _SIMPLE_LOGGER_HPP
+#ifndef SIMPLE_LOGGER_HPP
+#define SIMPLE_LOGGER_HPP
 
-#include <iostream>
-#include <string_view>
-#include <source_location>
 #include <chrono>
 #include <iomanip>
+#include <iostream>
+#include <mutex>
+#include <source_location>
+#include <string_view>
 
 /**
  * @file simple_logger.hpp
@@ -99,6 +100,9 @@ namespace SimpleLogger {
         template<typename... Args>
         static void log(LogLevel level, const std::source_location& loc, Args&&... args)
         {
+            static std::mutex log_mutex;
+            std::lock_guard<std::mutex> lock(log_mutex);
+
             auto now = std::chrono::system_clock::now();
             auto time_t_now = std::chrono::system_clock::to_time_t(now);
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
@@ -113,7 +117,6 @@ namespace SimpleLogger {
             std::cout << "\033[90m[" << loc.file_name() << ":" << loc.line() << " " << loc.function_name()
                       << "]\033[0m ";
 
-            // Print the actual message arguments using a fold expression
             ((std::cout << std::forward<Args>(args)), ...);
 
             std::cout << "\033[0m" << std::endl;  // Reset color and newline
@@ -148,4 +151,4 @@ namespace SimpleLogger {
     if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::FATAL)                                \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::FATAL, std::source_location::current(), __VA_ARGS__)
 
-#endif  // _SIMPLE_LOGGER_HPP
+#endif  // SIMPLE_LOGGER_HPP

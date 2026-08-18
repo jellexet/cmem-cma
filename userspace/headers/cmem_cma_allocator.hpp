@@ -5,8 +5,11 @@
 #include <format>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <new>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 #include "cmem_cma_buffer.hpp"
@@ -29,62 +32,95 @@ namespace cmem {
         using propagate_on_container_swap = std::false_type;
         using is_always_equal = std::false_type;
 
-        explicit CmemCmaAllocator(AllocatorOptions opt) noexcept;
-        ~CmemCmaAllocator() noexcept;
+        explicit CmemCmaAllocator(AllocatorOptions opt) noexcept : m_options(opt) {}
+        ~CmemCmaAllocator() noexcept = default;
 
-        CmemCmaAllocator& operator=(CmemCmaAllocator&) = delete;
-        CmemCmaAllocator(CmemCmaAllocator& other) = delete;
-
-        CmemCmaAllocator& operator=(CmemCmaAllocator&&) noexcept;
-        CmemCmaAllocator(CmemCmaAllocator&& other) noexcept;
+        CmemCmaAllocator& operator=(const CmemCmaAllocator&) noexcept = default;
+        CmemCmaAllocator(const CmemCmaAllocator&) noexcept = default;
+        CmemCmaAllocator& operator=(CmemCmaAllocator&&) noexcept = default;
+        CmemCmaAllocator(CmemCmaAllocator&&) noexcept = default;
 
         template<typename U>
-        constexpr CmemCmaAllocator(const CmemCmaAllocator<U>&) noexcept
+        constexpr CmemCmaAllocator(const CmemCmaAllocator<U>& other) noexcept : m_options(other.options())
         {}
+
+        [[nodiscard]] const AllocatorOptions& options() const noexcept { return m_options; }
 
         [[nodiscard]] T* allocate(std::size_t n)
         {
             if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
                 throw std::bad_array_new_length();
 
-            try {
-                m_buffer.allocate(n, m_options.numa_node)
+            const std::size_t bytes = n * sizeof(T);
 
-            } catch (const std::logic_error& err) {
-                throw std::bad_alloc();
-            } catch (const std::length_error& err) {
-                throw std::bad_alloc();
-            } catch (const std::domain_error& err) {
+            std::unique_ptr<CmemCmaBuffer> buf;
+            try {
+                buf = std::make_unique<CmemCmaBuffer>();
+                buf->allocate(bytes, m_options.numa_node);
+            } catch (const std::exception&) {
                 throw std::bad_alloc();
             }
 
-            LOG_INFO(std::format("Allocated buffer of size {}", n));
-            auto p = static_cast<T*>(m_buffer.data());
-            return p;
+            void* p = buf->data();
+
+            {
+                std::lock_guard<std::mutex> lock(registry_mutex());
+                registry().emplace(p, std::move(buf));
+            }
+
+            LOG_INFO(std::format("Allocated buffer of {} element(s), {} byte(s), at {}", n, bytes, p));
+            return static_cast<T*>(p);
         }
 
         void deallocate(T* p, std::size_t n) noexcept
         {
-            LOG_INFO(std::format("Deallocated buffer of size {}", n));
-            m_buffer.deallocate();
-        }
+            std::unique_ptr<CmemCmaBuffer> buf;
+            {
+                std::lock_guard<std::mutex> lock(registry_mutex());
+                auto it = registry().find(static_cast<void*>(p));
+                if (it == registry().end()) {
+                    LOG_ERROR(std::format("deallocate() called with a pointer this allocator did not hand out: {}",
+                                          static_cast<void*>(p)));
+                    return;
+                }
+                buf = std::move(it->second);
+                registry().erase(it);
+            }
 
-        template<class T, class U>
-        bool operator==(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b)
-        {
-            return a.buffer_m.get_buffer_id() == b.buffer_m.get_buffer_id();
-        }
-
-        template<class T, class U>
-        bool operator!=(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b)
-        {
-            return a.buffer_m.get_buffer_id() != b.buffer_m.get_buffer_id();
+            LOG_INFO(std::format("Deallocating buffer of {} element(s), {} byte(s)", n, n * sizeof(T)));
         }
 
       private:
         AllocatorOptions m_options{};
-        CmemCmaBuffer m_buffer{};
+
+        static std::mutex& registry_mutex()
+        {
+            static std::mutex m;
+            return m;
+        }
+
+        static std::unordered_map<void*, std::unique_ptr<CmemCmaBuffer>>& registry()
+        {
+            static std::unordered_map<void*, std::unique_ptr<CmemCmaBuffer>> r;
+            return r;
+        }
+
+        template<typename U>
+        friend class CmemCmaAllocator;
     };
+
+    template<typename T, typename U>
+    bool operator==(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b) noexcept
+    {
+        return a.options().numa_node == b.options().numa_node;
+    }
+
+    template<typename T, typename U>
+    bool operator!=(const CmemCmaAllocator<T>& a, const CmemCmaAllocator<U>& b) noexcept
+    {
+        return !(a == b);
+    }
+
 };  // namespace cmem
 
 #endif  // CMEM_CMA_ALLOCATOR_HPP

@@ -51,11 +51,11 @@
  */
 struct cmem_cma_alloc_req {
     __u32 size;        /**< Requested size of the DMA buffer (in bytes) */
-    __u32 numa_node;   /**< (In) NUMA node to allocate from, or -1 for default
+    __s32 numa_node;   /**< (In) NUMA node to allocate from, or -1 for default
                             (Out) NUMA node actually used. */
     __u64 dma_addr;    /**< (Out) DMA (bus) address of the allocated buffer */
-    __u64 mmap_offset; /**< (Out) Offset argument to 'mmap()' of this fd: buffer_id * PAGE_SIZE */
-    __u32 buffer_id;   /**< (Out) Internal ID of the allocated buffer */
+    __s64 mmap_offset; /**< (Out) Offset argument to 'mmap()' of this fd: buffer_id * PAGE_SIZE */
+    __s32 buffer_id;   /**< (Out) Internal ID of the allocated buffer */
     __u32 reserved0;   /**< Reserved for future use */
 };
 
