@@ -49,10 +49,12 @@ struct dma_buffer {
     void* vaddr;         /**< Virtual address visible to the kernel */
     dma_addr_t dma_addr; /**< Physical (DMA) address of the buffer */
     size_t size;         /**< Size of the buffer in bytes */
-    int numa_node;       /**< NUMA node on which memory is allocated*/
+    s32 numa_node;       /**< NUMA node on which memory is allocated*/
     struct device* dev;  /**< Device the allocation was made against; the
-                               matching device must be used for freeing */
+                              matching device must be used for freeing */
     struct file* owner;  /**< The open file (fd) that allocated this buffer. */
+    atomic_t mmap_count; /**< Counter of references of the buffer. The buffer is
+                        not freed if this counter is > 0 */
 };
 
 /*
@@ -64,6 +66,8 @@ struct dma_buffer {
  *   The parameter is read-only after load.
  */
 static unsigned long max_allocation_size = CMEM_CMA_DEFAULT_MAX_ALLOC_SIZE;
+static u64 total_allocated_bytes = 0;
+
 module_param(max_allocation_size, ulong, READONLY);
 MODULE_PARM_DESC(max_allocation_size,
                  "Maximum size in bytes of a single DMA buffer allocation (default 8GiB). "
@@ -260,17 +264,32 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
         return -EINVAL;
     }
 
+    mutex_lock(&buffer_mutex);
+    if (total_allocated_bytes + req->size > effective_max_alloc_size) {
+        mutex_unlock(&buffer_mutex);
+        pr_err_ratelimited("cmem_cma: alocating %u bytes would exceed the %lu effective maximum allocation size. "
+                           "%llu bytes already in use.\n",
+                           req->size,
+                           effective_max_alloc_size,
+                           total_allocated_bytes);
+        return -ENOSPC;
+    }
+    total_allocated_bytes += req->size;
+    mutex_unlock(&buffer_mutex);
+
     buf = kzalloc(sizeof(*buf), GFP_KERNEL);
-    if (!buf)
-        return -ENOMEM;
+    if (!buf) {
+        ret = -ENOMEM;
+        goto err_mem;
+    }
 
     dma_dev = cmem_cma_get_node_device(req->numa_node, &resolved_node);
 
     vaddr = dma_alloc_coherent(dma_dev, (size_t)req->size, &dma_addr, GFP_KERNEL);
     if (!vaddr) {
         pr_err("cmem_cma: failed to allocate DMA buffer of size %u\n", req->size);
-        kfree(buf);
-        return -ENOMEM;
+        ret = -ENOMEM;
+        goto err_buf;
     }
 
     buf->vaddr = vaddr;
@@ -279,6 +298,7 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
     buf->numa_node = resolved_node;
     buf->dev = dma_dev;
     buf->owner = filp;
+    atomic_set(&buf->mmap_count, 0);
 
     mutex_lock(&buffer_mutex);
     ret = xa_alloc(&cmem_buffers, &buffer_id, buf, limit, GFP_KERNEL);
@@ -287,8 +307,8 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
     if (ret) {
         pr_err("cmem_cma: no free buffer IDs available (%d)\n", ret);
         dma_free_coherent(dma_dev, req->size, vaddr, dma_addr);
-        kfree(buf);
-        return ret == -EBUSY ? -ENOMEM : ret;
+        ret = -EBUSY ? -ENOMEM : ret;
+        goto err_buf;
     }
 
     req->dma_addr = dma_addr;
@@ -304,6 +324,14 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
                          req->numa_node);
 
     return 0;
+
+err_buf:
+    kfree(buf);
+err_mem:
+    mutex_lock(&buffer_mutex);
+    total_allocated_bytes -= req->size;
+    mutex_unlock(&buffer_mutex);
+    return ret;
 }
 
 /**
@@ -333,7 +361,15 @@ static int cmem_cma_free_buffer(struct file* filp, struct cmem_cma_free_req* req
         return -EPERM;
     }
 
+    if (atomic_read(&buf->mmap_count) > 0) {
+        pr_warn_ratelimited(
+          "cmem_cma: Buffer %d still in use, %d active.\n", req->buffer_id, atomic_read(&buf->mmap_count));
+        mutex_unlock(&buffer_mutex);
+        return -EBUSY;
+    }
+
     buf = xa_erase(&cmem_buffers, req->buffer_id);
+    total_allocated_bytes -= buf->size;
     mutex_unlock(&buffer_mutex);
 
     dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
@@ -354,19 +390,17 @@ static int cmem_cma_get_info(struct cmem_cma_info* info)
 {
     struct dma_buffer* buf;
     unsigned long index;
-    int count = 0;
-    size_t total = 0;
+    int n_buffers = 0;
 
     mutex_lock(&buffer_mutex);
     xa_for_each(&cmem_buffers, index, buf)
     {
-        count++;
-        total += buf->size;
+        n_buffers++;
     }
     mutex_unlock(&buffer_mutex);
 
-    info->num_buffers = count;
-    info->total_allocated = total;
+    info->num_buffers = n_buffers;
+    info->total_allocated = total_allocated_bytes;
     info->numa_nodes_available = (int)nr_node_ids;
     info->max_allocation_size = effective_max_alloc_size;
     info->max_buffers = effective_max_buffers;
@@ -430,6 +464,34 @@ static const struct proc_ops cmem_cma_proc_ops = {
 };
 
 /**
+ * @brief vm_area_struct ->open callback: called for every additional
+ *        reference taken on a mapping created by cmem_cma_mmap().
+ *        NOT called for the very first mapping.
+ */
+static void cmem_cma_vma_open(struct vm_area_struct* vma)
+{
+    struct dma_buffer* buf = vma->vm_private_data;
+
+    atomic_inc(&buf->mmap_count);
+}
+
+/**
+ * @brief vm_area_struct ->close callback: called for every reference
+ *        of the buffers taken down.
+ */
+static void cmem_cma_vma_close(struct vm_area_struct* vma)
+{
+    struct dma_buffer* buf = vma->vm_private_data;
+
+    atomic_dec(&buf->mmap_count);
+}
+
+static const struct vm_operations_struct cmem_cma_vm_ops = {
+  .open = cmem_cma_vma_open,
+  .close = cmem_cma_vma_close,
+};
+
+/**
  * @brief Memory mapping support for DMA buffers
  *
  * @param filp pointer to the file structure
@@ -474,6 +536,12 @@ static int cmem_cma_mmap(struct file* filp, struct vm_area_struct* vma)
     vma->vm_pgoff = 0;
     ret = dma_mmap_coherent(buf->dev, vma, buf->vaddr, buf->dma_addr, len);
     vma->vm_pgoff = saved_pgoff;
+
+    if (ret == 0) {
+        vma->vm_ops = &cmem_cma_vm_ops;
+        vma->vm_private_data = buf;
+        atomic_inc(&buf->mmap_count);
+    }
 
     mutex_unlock(&buffer_mutex);
 
@@ -566,7 +634,8 @@ static void cmem_cma_free_all_buffers(void)
     xa_for_each(&cmem_buffers, idx, buf)
     {
         dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
-        pr_debug("cmem_cma: freed buffer %lu\n", idx);
+        total_allocated_bytes -= buf->size;
+        pr_debug("cmem_cma: freed buffer %lu, total_allocated_bytes %llu\n", idx, total_allocated_bytes);
         kfree(buf);
     }
     xa_destroy(&cmem_buffers);
@@ -592,6 +661,7 @@ static void cmem_cma_release_owned_buffers(struct file* filp)
             continue;
 
         xa_erase(&cmem_buffers, idx);
+        total_allocated_bytes -= buf->size;
         dma_free_coherent(buf->dev, buf->size, buf->vaddr, buf->dma_addr);
 
         kfree(buf);
