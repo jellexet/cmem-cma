@@ -24,10 +24,9 @@ sudo dnf install numactl-devel
 
 ## Usage
 
-Unfortunately for an out-of-tree kernel module it is not possible to reference some symbols in `cma.h` that would allow
-to get the total size of the `CMA` pool. In order to match the allocation size of `cmem_cma` with the size of the `CMA` pool,
-look for `CmaTotal` in `/proc/meminfo` and set `max_allocation_size` accordingly when installing the module.
+In order to match the allocation size of `cmem_cma` with the size of the `CMA` pool, look for `CmaTotal` in `/proc/meminfo` and set `max_allocation_size` accordingly when installing the module.
 Beware that `max_allocation_size` is in Bytes.
+Unfortunately for an out-of-tree kernel module it is not possible to reference some symbols in `cma.h` that would allow to get the total size of the `CMA` pool.
 
 See the [example below](#1-load-the-kernel-module).
 
