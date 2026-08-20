@@ -1,0 +1,2 @@
+CompileFlags:
+  CompilationDatabase: ./build # Build directory where compile_commands.json is located

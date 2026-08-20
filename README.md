@@ -102,3 +102,14 @@ sudo cp /sys/kernel/btf/vmlinux /usr/lib/modules/$(uname -r)/build
 ```
 
 The reason is a change in location of the file `vmlinux`
+
+## Userspace
+
+`usperspace` directory contains C++ files that provide an interface to access the kernel module functionalities.
+To compile:
+
+```bash
+cmake -S . -B build
+cd build
+make -j $(nproc)
+```
