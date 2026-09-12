@@ -69,10 +69,9 @@ static unsigned long max_allocation_size = CMEM_CMA_DEFAULT_MAX_ALLOC_SIZE;
 static u64 total_allocated_bytes = 0;
 
 module_param(max_allocation_size, ulong, READONLY);
-MODULE_PARM_DESC(max_allocation_size,
-                 "Maximum size in bytes of a single DMA buffer allocation (default 8GiB). "
-                 " Read 'CmaTotal' in /proc/meminfo and set max_allocation_size to that value "
-                 "at load time if you want the driver to only use CMA memory.");
+MODULE_PARM_DESC(max_allocation_size, "Maximum size in bytes of a single DMA buffer allocation (default 8GiB). "
+                                      " Read 'CmaTotal' in /proc/meminfo and set max_allocation_size to that value "
+                                      "at load time if you want the driver to only use CMA memory.");
 
 /* Effective (post-clamp) maximum total RAM the driver will occupy. */
 static unsigned long effective_max_alloc_size;
@@ -121,8 +120,7 @@ static void cmem_cma_compute_limits(void)
 
     pr_debug("cmem_cma: effective max allocation size = %lu bytes, "
              "max concurrent buffers = %u\n",
-             effective_max_alloc_size,
-             effective_max_buffers);
+             effective_max_alloc_size, effective_max_buffers);
 }
 
 /**
@@ -137,8 +135,7 @@ static void cmem_cma_unregister_node_devices(void)
     if (!cmem_cma_node_devs)
         return;
 
-    for_each_online_node(node)
-    {
+    for_each_online_node (node) {
         if (cmem_cma_node_devs[node].registered)
             platform_device_unregister(&cmem_cma_node_devs[node].pdev);
     }
@@ -160,8 +157,7 @@ static int cmem_cma_register_node_devices(void)
     if (!cmem_cma_node_devs)
         return -ENOMEM;
 
-    for_each_online_node(node)
-    {
+    for_each_online_node (node) {
         struct platform_device* pdev = &cmem_cma_node_devs[node].pdev;
 
         pdev->name = "cma-dma-device";
@@ -222,8 +218,8 @@ static struct device* cmem_cma_get_node_device(int numa_node, int* out_node)
         node = numa_node_id();
 
     if (node < 0 || node >= cmem_cma_num_nodes || !cmem_cma_node_devs[node].registered) {
-        pr_warn_ratelimited(
-          "cmem_cma: NUMA node %d has no usable device, falling back to node %d\n", numa_node, first_online_node);
+        pr_warn_ratelimited("cmem_cma: NUMA node %d has no usable device, falling back to node %d\n", numa_node,
+                            first_online_node);
         node = first_online_node;
     }
 
@@ -254,8 +250,8 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
     }
 
     if (req->size > effective_max_alloc_size) {
-        pr_err_ratelimited(
-          "cmem_cma: requested size %u exceeds max_allocation_size (%lu bytes)\n", req->size, effective_max_alloc_size);
+        pr_err_ratelimited("cmem_cma: requested size %u exceeds max_allocation_size (%lu bytes)\n", req->size,
+                           effective_max_alloc_size);
         return -EINVAL;
     }
 
@@ -269,9 +265,7 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
         mutex_unlock(&buffer_mutex);
         pr_err_ratelimited("cmem_cma: alocating %u bytes would exceed the %lu effective maximum allocation size. "
                            "%llu bytes already in use.\n",
-                           req->size,
-                           effective_max_alloc_size,
-                           total_allocated_bytes);
+                           req->size, effective_max_alloc_size, total_allocated_bytes);
         return -ENOSPC;
     }
     total_allocated_bytes += req->size;
@@ -318,10 +312,7 @@ static int cmem_cma_alloc_buffer(struct file* filp, struct cmem_cma_alloc_req* r
 
     pr_debug_ratelimited("cmem_cma: allocated %u bytes at DMA addr %pad, buffer ID %u, "
                          "requested NUMA node %d\n",
-                         req->size,
-                         &dma_addr,
-                         buffer_id,
-                         req->numa_node);
+                         req->size, &dma_addr, buffer_id, req->numa_node);
 
     return 0;
 
@@ -362,8 +353,8 @@ static int cmem_cma_free_buffer(struct file* filp, struct cmem_cma_free_req* req
     }
 
     if (atomic_read(&buf->mmap_count) > 0) {
-        pr_warn_ratelimited(
-          "cmem_cma: Buffer %d still in use, %d active.\n", req->buffer_id, atomic_read(&buf->mmap_count));
+        pr_warn_ratelimited("cmem_cma: Buffer %d still in use, %d active.\n", req->buffer_id,
+                            atomic_read(&buf->mmap_count));
         mutex_unlock(&buffer_mutex);
         return -EBUSY;
     }
@@ -432,8 +423,8 @@ static int cmem_cma_proc_show(struct seq_file* m, void* v)
     mutex_lock(&buffer_mutex);
     xa_for_each(&cmem_buffers, index, buf)
     {
-        seq_printf(
-          m, "%-8lu %-14lu %-6d 0x%016llx\n", index, buf->size, buf->numa_node, (unsigned long long)buf->dma_addr);
+        seq_printf(m, "%-8lu %-14lu %-6d 0x%016llx\n", index, buf->size, buf->numa_node,
+                   (unsigned long long)buf->dma_addr);
         count++;
         total += buf->size;
     }
@@ -548,11 +539,7 @@ static int cmem_cma_mmap(struct file* filp, struct vm_area_struct* vma)
     if (ret) {
         pr_err("cmem_cma: dma_mmap_coherent failed for buffer %d (vaddr=%pK, "
                "dma_addr=%pad, len=%lu): %d\n",
-               buffer_id,
-               buf->vaddr,
-               &buf->dma_addr,
-               len,
-               ret);
+               buffer_id, buf->vaddr, &buf->dma_addr, len, ret);
         return ret;
     }
 
@@ -749,8 +736,7 @@ static int __init cmem_cma_init(void)
 
     pr_info("cmem_cma: Module loaded successfully, major number %d, "
             "%d NUMA node device(s) registered\n",
-            major_number,
-            cmem_cma_num_nodes);
+            major_number, cmem_cma_num_nodes);
 
     return 0;
 

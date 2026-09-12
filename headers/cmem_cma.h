@@ -5,7 +5,7 @@
 #include <linux/types.h>
 
 #define DEVICE_NAME "cmem_cma" /**< Device name as seen in /dev */
-#define CLASS_NAME "cmem_cma"  /**< Device class name */
+#define CLASS_NAME  "cmem_cma" /**< Device class name */
 
 /**
  * @def CMEM_CMA_IOC_MAGIC

@@ -75,8 +75,7 @@ namespace cmem {
 
         using wire_size_t = decltype(std::declval<cmem_cma_alloc_req>().size);
         if (size > std::numeric_limits<wire_size_t>::max()) {
-            std::string error_msg = std::format("Size {} exceeds the maximum single allocation of {} bytes",
-                                                size,
+            std::string error_msg = std::format("Size {} exceeds the maximum single allocation of {} bytes", size,
                                                 std::numeric_limits<wire_size_t>::max());
             LOG_ERROR(error_msg);
             throw std::length_error(error_msg);
@@ -98,16 +97,15 @@ namespace cmem {
             free_req.buffer_id = static_cast<int32_t>(alloc_req.buffer_id);
             if (ioctl(m_fd, CMEM_CMA_FREE, &free_req) < 0) {
                 LOG_ERROR(std::format("Failed to roll back orphaned buffer {} after invalid DMA address: {}",
-                                      alloc_req.buffer_id,
-                                      strerror(errno)));
+                                      alloc_req.buffer_id, strerror(errno)));
             }
             throw std::domain_error("allocate: kernel returned a zero DMA address");
         }
 
         LOG_TRACE("Calling mmap. size=", std::hex, alloc_req.size, " offset=", alloc_req.mmap_offset);
 
-        void* mapped_addr = ::mmap(
-          nullptr, alloc_req.size, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, static_cast<off_t>(alloc_req.mmap_offset));
+        void* mapped_addr = ::mmap(nullptr, alloc_req.size, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd,
+                                   static_cast<off_t>(alloc_req.mmap_offset));
 
         if (mapped_addr == MAP_FAILED) {
             const int err = errno;
@@ -117,8 +115,7 @@ namespace cmem {
             free_req.buffer_id = static_cast<int32_t>(alloc_req.buffer_id);
             if (ioctl(m_fd, CMEM_CMA_FREE, &free_req) < 0) {
                 LOG_ERROR(std::format("Failed to roll back orphaned buffer {} after mmap failure: {}",
-                                      alloc_req.buffer_id,
-                                      strerror(errno)));
+                                      alloc_req.buffer_id, strerror(errno)));
             }
 
             throw std::domain_error(std::format("allocate: mmap failed: {}", strerror(err)));
