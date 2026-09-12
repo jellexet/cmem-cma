@@ -1,0 +1,49 @@
+name: cmem_cma_CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  code_style:
+    name: Code style
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          files=$(git ls-files '*.c' '*.h')
+
+          if [ -z "$files" ]; then
+            echo "No C source/header files found."
+            exit 0
+          fi
+
+          clang-format --dry-run --Werror $files
+
+  build:
+    name: Build kernel module
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            linux-headers-$(uname -r)
+
+      - name: Build kernel module
+        run: |
+          make
