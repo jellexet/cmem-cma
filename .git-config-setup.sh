@@ -12,6 +12,6 @@ git config core.hooksPath .hooks
 
 echo "core.hooksPath set to .hooks — this local clone's git hooks are now active."
 
-# git config blame.ignoreRevsFile .git-blame-ignore-revs
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 
-# echo "blame.ignoreRevsFile set to .git-blame-ignore-revs"
+echo "blame.ignoreRevsFile set to .git-blame-ignore-revs"
