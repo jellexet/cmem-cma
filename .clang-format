@@ -58,4 +58,10 @@ SpacesInContainerLiterals: false                     ## default (true)
 PenaltyExcessCharacter: 10000                        ## default (1000000)
 # PenaltyIndentedWhitespace: 0
 # PenaltyReturnTypeOnItsOwnLine: 200
+BinPackArguments: true
+BinPackParameters: true
+ForEachMacros: ['for_each_online_node']
+AlignEscapedNewlines: DontAlign
+AlignConsecutiveMacros:
+  Enabled: true
 ...
