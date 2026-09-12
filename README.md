@@ -22,6 +22,13 @@ Install the NUMA library
 sudo dnf install numactl-devel
 ```
 
+To enable pre-commit autoformat run the following commands (just once per cloned repo):
+
+```bash
+chmod +x .git-config-setup.sh
+./.git-config-setup.sh
+```
+
 ## Usage
 
 In order to match the allocation size of `cmem_cma` with the size of the `CMA` pool, look for `CmaTotal` in `/proc/meminfo` and set `max_allocation_size` accordingly when installing the module.
