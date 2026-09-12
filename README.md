@@ -10,7 +10,7 @@ Unfortunately it does not play well with RDMA, [here](docs/CMA_REPORT.md) is the
 
 ## Before starting
 
-`kernel-devel` and `kernel-headers` need to be installed in order to compile the code.
+`kernel-devel`, `kernel-headers` and `numactl-devel` (Also called `numactl` or `libnuma-dev` depending on the distro) need to be installed in order to compile the code.
 
 ```sh
 sudo dnf install kernel-devel-$(uname -r) kernel-headers-$(uname -r)
