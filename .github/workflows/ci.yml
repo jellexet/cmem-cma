@@ -46,7 +46,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            linux-headers-$(uname -r)
+            linux-headers-$(uname -r) \
+            libnuma-dev
 
       - name: Build kernel module
         run: |
