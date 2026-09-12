@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+
+# pre-commit hook that runs clang-format on staged C/C++ files.
+
+set -euo pipefail
+
+command -v clang-format >/dev/null 2>&1 || {
+    echo "warning: clang-format not found on PATH, skipping formatting" >&2
+    exit 0
+}
+
+# Collect staged C/C++ files.
+STAGED_FILES=()
+while IFS= read -r -d '' file; do
+    STAGED_FILES+=("$file")
+done < <(
+    git diff --cached \
+        --name-only \
+        --diff-filter=ACMR \
+        -z \
+        -- \
+        '*.c' '*.h' '*.cc' '*.cpp' '*.cxx' \
+        '*.hh' '*.hpp' '*.hxx' '*.inl'
+)
+
+if [ ${#STAGED_FILES[@]} -eq 0 ]; then
+    exit 0
+fi
+
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/clang-format-hook.XXXXXX")
+REPO_ROOT=$(git rev-parse --show-toplevel)
+FORMAT_STYLE="$REPO_ROOT/.clang-format"
+
+# Rollback bookkeeping.
+ROLLBACK_FILE=()
+ROLLBACK_MODE=()
+ROLLBACK_HASH=()
+ROLLBACK_WT_BACKUP=()
+ROLLBACK_WT_EXISTS=()
+
+cleanup() {
+    status=$?
+
+    if [ "$status" -ne 0 ]; then
+        echo "error: clang-format hook failed, rolling back its changes..." >&2
+
+        for i in "${!ROLLBACK_FILE[@]}"; do
+            file=${ROLLBACK_FILE[$i]}
+
+            # Restore index.
+            git update-index \
+                --cacheinfo \
+                "${ROLLBACK_MODE[$i]}" \
+                "${ROLLBACK_HASH[$i]}" \
+                "$file"
+
+            # Restore working tree, if we changed it.
+            if [ "${ROLLBACK_WT_EXISTS[$i]}" -eq 1 ]; then
+                cp -- "${ROLLBACK_WT_BACKUP[$i]}" "$file"
+            else
+                rm -f -- "$file"
+            fi
+        done
+    fi
+
+    rm -rf "$WORKDIR"
+    exit "$status"
+}
+trap cleanup EXIT
+
+echo "Formatting ${#STAGED_FILES[@]} staged file(s)..."
+
+n=0
+
+for file in "${STAGED_FILES[@]}"; do
+    n=$((n + 1))
+
+    # Get index mode and object id.
+    read -r mode old_hash _ <<<"$(git ls-files -s -- "$file")"
+
+    # Only format regular/executable files.
+    case "$mode" in
+        100644|100755) ;;
+        *) continue ;;
+    esac
+
+    base="$WORKDIR/$n-base"
+    formatted="$WORKDIR/$n-formatted"
+    backup="$WORKDIR/$n-backup"
+
+    # Base = original staged/index contents.
+    git cat-file blob "$old_hash" > "$base"
+
+    # Format the staged version only.
+    cp -- "$base" "$formatted"
+    clang-format \
+        --style="file:$FORMAT_STYLE" \
+        --assume-filename="$file" \
+        -i "$formatted"
+
+    # Nothing to do if the staged version was already formatted.
+    if cmp -s "$base" "$formatted"; then
+        continue
+    fi
+
+    # Determine whether the working tree differs from the index.
+    if git diff --quiet -- "$file"; then
+        worktree_clean=1
+    else
+        worktree_clean=0
+    fi
+
+    # Save the original working tree for rollback.
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        wt_exists=1
+        cp -- "$file" "$backup"
+    else
+        wt_exists=0
+    fi
+
+    ROLLBACK_FILE+=("$file")
+    ROLLBACK_MODE+=("$mode")
+    ROLLBACK_HASH+=("$old_hash")
+    ROLLBACK_WT_BACKUP+=("$backup")
+    ROLLBACK_WT_EXISTS+=("$wt_exists")
+
+    if [ "$worktree_clean" -eq 1 ]; then
+        # No unstaged changes: the formatted staged contents can also
+        # become the working-tree contents.
+        git hash-object -w -t blob "$formatted" >/dev/null
+        new_hash=$(git hash-object -w "$formatted")
+
+        git update-index --cacheinfo "$mode" "$new_hash" "$file"
+        cp -- "$formatted" "$file"
+        continue
+    fi
+
+    # If the working tree version is not an ordinary file (for example,
+    # it was deleted or replaced by a symlink), do not overwrite it.
+    if [ ! -f "$file" ] || [ -L "$file" ]; then
+        new_hash=$(git hash-object -w "$formatted")
+        git update-index --cacheinfo "$mode" "$new_hash" "$file"
+
+        echo "note: formatted staged version of '$file'; working tree left unchanged" >&2
+        continue
+    fi
+
+    echo "note: formatted staged version of '$file'; working tree left unchanged" >&2
+    new_hash=$(git hash-object -w "$formatted")
+    git update-index --cacheinfo "$mode" "$new_hash" "$file"
+
+done
+
+if git diff --cached --quiet; then
+    echo "warning: after formatting there are no actual changes. Commit would be empty." >&2
+    exit 1
+fi
