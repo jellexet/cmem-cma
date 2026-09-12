@@ -14,7 +14,7 @@
 #include <time.h>
 #include "cmem_cma.h"
 
-#define DEVICE_PATH "/dev/cmem_cma"
+#define DEVICE_PATH      "/dev/cmem_cma"
 #define MAX_TEST_BUFFERS 8
 
 struct test_buffer {
@@ -76,8 +76,7 @@ static void explain_alloc_errno(int err)
                 "'sudo %s ...', or grant the\n"
                 "     binary the capability directly: "
                 "'sudo setcap cap_sys_rawio+ep %s'\n",
-                g_prog_name,
-                g_prog_name);
+                g_prog_name, g_prog_name);
     }
 }
 
@@ -92,8 +91,8 @@ static int show_device_info(int fd)
 
     printf("Device Information:\n");
     printf("  Active buffers: %d\n", info.num_buffers);
-    printf(
-      "  Total allocated: %llu bytes (%.2f MB)\n", info.total_allocated, (double)info.total_allocated / (1024 * 1024));
+    printf("  Total allocated: %llu bytes (%.2f MB)\n", info.total_allocated,
+           (double)info.total_allocated / (1024 * 1024));
     printf("  NUMA nodes available: %d\n", info.numa_nodes_available);
 
     return 0;
@@ -141,9 +140,7 @@ static int test_memory_access(void* mapped_addr, size_t size, int buffer_id)
     printf("    Verifying data... ");
     for (size_t i = 0; i < num_words; i++) {
         if (buffer[i] != (test_pattern + i)) {
-            printf("FAILED at word %zu: expected 0x%08X, got 0x%08X\n",
-                   i,
-                   (unsigned int)(test_pattern + i),
+            printf("FAILED at word %zu: expected 0x%08X, got 0x%08X\n", i, (unsigned int)(test_pattern + i),
                    (unsigned int)buffer[i]);
             return -1;
         }

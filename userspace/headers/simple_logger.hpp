@@ -127,28 +127,28 @@ namespace SimpleLogger {
 // We use 'if constexpr' against the compile-time constant 'CurrentLogLevelCutoff'.
 // If the condition is false, the compiler strips the branch.
 
-#define LOG_TRACE(...)                                                                                                 \
-    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::TRACE)                                \
+#define LOG_TRACE(...) \
+    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::TRACE) \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::TRACE, std::source_location::current(), __VA_ARGS__)
 
-#define LOG_DEBUG(...)                                                                                                 \
-    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::DEBUG)                                \
+#define LOG_DEBUG(...) \
+    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::DEBUG) \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::DEBUG, std::source_location::current(), __VA_ARGS__)
 
-#define LOG_INFO(...)                                                                                                  \
-    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::INFO)                                 \
+#define LOG_INFO(...) \
+    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::INFO) \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::INFO, std::source_location::current(), __VA_ARGS__)
 
-#define LOG_WARN(...)                                                                                                  \
-    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::WARN)                                 \
+#define LOG_WARN(...) \
+    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::WARN) \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::WARN, std::source_location::current(), __VA_ARGS__)
 
-#define LOG_ERROR(...)                                                                                                 \
-    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::ERROR)                                \
+#define LOG_ERROR(...) \
+    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::ERROR) \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::ERROR, std::source_location::current(), __VA_ARGS__)
 
-#define LOG_FATAL(...)                                                                                                 \
-    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::FATAL)                                \
+#define LOG_FATAL(...) \
+    if constexpr (SimpleLogger::CurrentLogLevelCutoff <= SimpleLogger::LogLevel::FATAL) \
     SimpleLogger::Logger::log(SimpleLogger::LogLevel::FATAL, std::source_location::current(), __VA_ARGS__)
 
 #endif  // SIMPLE_LOGGER_HPP
