@@ -20,7 +20,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          files=$(git ls-files '*.c' '*.h')
+          files=$(git ls-files '*.c' '*.h' '*.cpp' '*.hpp')
 
           if [ -z "$files" ]; then
             echo "No C source/header files found."
